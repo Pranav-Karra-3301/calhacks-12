@@ -81,10 +81,6 @@ export class DeepgramLiveTranscriber {
         this.onError(new Error(error.message || 'Deepgram connection error'))
       })
 
-      connection.on(LiveTranscriptionEvents.Warning, (warning: any) => {
-        console.warn('[Deepgram] Warning:', warning)
-      })
-
       connection.on(LiveTranscriptionEvents.Close, () => {
         console.log('[Deepgram] WebSocket connection closed')
       })
