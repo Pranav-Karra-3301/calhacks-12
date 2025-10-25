@@ -11,7 +11,7 @@ import { ScrollingWaveform } from '@/components/ui/waveform'
 import { supabase, getAccessToken, functionsUrl } from '@/lib/supabase'
 import { fnActivateAI, fnDetectorGuess } from '@/lib/functions'
 import { publishAudioBlob, setLocalAudioEnabled } from '@/lib/livekit-audio'
-import { ChunkedRecorder } from '@/lib/recorder'
+import { DeepgramLiveTranscriber } from '@/lib/deepgram-transcription'
 
 const MODERATOR_VOICE_ID = 'kdmDKE6EkgrWrrykO9Qt'
 const AI_MAX_SECONDS = 180
@@ -28,7 +28,7 @@ type RoomInfo = {
 }
 
 type Participant = { uid: string; display_name: string | null; joined_at: string }
-type TranscriptLine = { id: number; text: string; uid: string | null; created_at: string }
+type TranscriptLine = { id: number; text: string; uid: string | null; created_at: string; speaker_id?: number | null }
 
 export default function TalkPage({ params }: { params: { roomId: string } }) {
   const roomId = params.roomId
@@ -72,8 +72,8 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [suggestionLoading, setSuggestionLoading] = useState(false)
   
-  // Transcription recorder
-  const recRef = useRef<ChunkedRecorder | null>(null)
+  // Deepgram transcription
+  const deepgramRef = useRef<DeepgramLiveTranscriber | null>(null)
   
   // Mic controls
   const [selectedMic, setSelectedMic] = useState('')
@@ -296,46 +296,78 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     setLocalAudioEnabled(livekitRoom.current, !isMicMuted)
   }, [isMicMuted, isConnected])
 
-  // Start transcription recorder
+  // Start Deepgram live transcription - TRUE real-time streaming!
   useEffect(() => {
     if (!userId || !isConnected || aiActive) return
-    
-    let cancelled = false
-    
-    async function startRecorder() {
+
+    const DEEPGRAM_API_KEY = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY
+
+    if (!DEEPGRAM_API_KEY) {
+      console.error('[Deepgram] API key not found in environment')
+      return
+    }
+
+    async function startDeepgram() {
       try {
-        recRef.current = new ChunkedRecorder({
-          timesliceMs: 3000,
-          onChunk: async (blob, seq) => {
-            if (!userId || cancelled || aiActive) return
-            try {
-              const token = await getAccessToken()
-              const apiUrl = `/api/functions/transcribe-chunk?roomId=${encodeURIComponent(roomId)}`
-              await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 
-                  'Authorization': token ? `Bearer ${token}` : '',
-                  'Content-Type': blob.type
-                },
-                body: blob,
-              })
-            } catch (_) {
-              // ignore chunk errors
+        console.log('[Deepgram] Starting live transcription...')
+
+        deepgramRef.current = new DeepgramLiveTranscriber(
+          DEEPGRAM_API_KEY!,
+          // On transcript callback
+          async (data) => {
+            if (!data.isFinal || !data.transcript || data.transcript.trim().length === 0) {
+              // Only save final transcripts with actual content
+              return
             }
+
+            console.log(`[Deepgram] Final transcript from speaker ${data.speaker}:`, data.transcript)
+
+            // Save to Supabase
+            try {
+              const { error } = await supabase
+                .from('transcripts')
+                .insert({
+                  room_id: roomId,
+                  uid: userId,
+                  text: data.transcript,
+                  speaker_id: data.speaker,
+                  // Add timing data from first and last word
+                  start_ms: data.words && data.words.length > 0
+                    ? Math.floor(data.words[0].start * 1000)
+                    : null,
+                  end_ms: data.words && data.words.length > 0
+                    ? Math.floor(data.words[data.words.length - 1].end * 1000)
+                    : null,
+                })
+
+              if (error) {
+                console.error('[Deepgram] Failed to save transcript:', error)
+              } else {
+                console.log('[Deepgram] Transcript saved to database')
+              }
+            } catch (error) {
+              console.error('[Deepgram] Error saving transcript:', error)
+            }
+          },
+          // On error callback
+          (error) => {
+            console.error('[Deepgram] Transcription error:', error)
           }
-        })
-        await recRef.current.start()
-      } catch (_) {
-        // mic unavailable
+        )
+
+        await deepgramRef.current.start()
+        console.log('[Deepgram] Live transcription started successfully!')
+      } catch (error) {
+        console.error('[Deepgram] Failed to start:', error)
       }
     }
-    
-    startRecorder()
-    
+
+    startDeepgram()
+
     return () => {
-      cancelled = true
-      recRef.current?.stop()
-      recRef.current = null
+      console.log('[Deepgram] Cleaning up...')
+      deepgramRef.current?.stop()
+      deepgramRef.current = null
     }
   }, [roomId, userId, isConnected, aiActive])
 
@@ -667,13 +699,16 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
           <Card>
             <CardHeader className="space-y-1 py-3">
               <div className="heading-font text-xl">Transcript</div>
-              <p className="text-xs text-muted-foreground">Powered by Groq Whisper Turbo</p>
+              <p className="text-xs text-muted-foreground">Powered by Deepgram Nova-3 • Real-time streaming</p>
             </CardHeader>
             <CardContent className="space-y-3 max-h-64 overflow-y-auto">
               {transcripts.map((line) => (
                 <div key={line.id} className="rounded-2xl border border-border/60 p-3 bg-white/80">
                   <div className="text-xs text-muted-foreground">
-                    {nameFor(line.uid)} · {new Date(line.created_at).toLocaleTimeString()}
+                    {nameFor(line.uid)}
+                    {line.speaker_id !== undefined && line.speaker_id !== null && ` (Speaker ${line.speaker_id})`}
+                    {' · '}
+                    {new Date(line.created_at).toLocaleTimeString()}
                   </div>
                   <div className="text-sm mt-1">{line.text}</div>
                 </div>

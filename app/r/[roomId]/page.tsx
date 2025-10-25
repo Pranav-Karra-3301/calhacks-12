@@ -4,8 +4,9 @@ import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
-import { fnAssignRoles } from '@/lib/functions'
+import { fnAssignRoles, fnJoinRoom } from '@/lib/functions'
 import { generateAvatarUrl } from '@/lib/avatar'
+import { QRCodeSVG } from 'qrcode.react'
 
 type Participant = { uid: string; display_name: string | null; joined_at: string; role: string | null }
 type RoomMeta = { id: string; code: string | null; created_by: string | null; status: string | null }
@@ -18,10 +19,16 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
   const [participantAvatars, setParticipantAvatars] = useState<Map<string, string>>(new Map())
   const [room, setRoom] = useState<RoomMeta | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
+  const [isGuest, setIsGuest] = useState(false)
+  const [guestDisplayName, setGuestDisplayName] = useState<string | null>(null)
   const [copyCodeState, setCopyCodeState] = useState<'idle' | 'copied'>('idle')
   const [copyLinkState, setCopyLinkState] = useState<'idle' | 'copied'>('idle')
   const [startingGame, setStartingGame] = useState(false)
+  const [joinError, setJoinError] = useState<string | null>(null)
   const navigated = useRef(false)
+  const joinAttempted = useRef(false)
+
+  const guestNameFromUid = (uid: string) => `Guest ${uid.slice(0, 4).toUpperCase()}`
 
   const shareLink = typeof window === 'undefined' ? `https://mimic.game/r/${roomId}` : `${window.location.origin}/r/${roomId}`
   const displayCode = room?.code ?? roomId
@@ -29,15 +36,36 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
 
   useEffect(() => {
     let active = true
-    ;(async () => {
-      const { data: auth } = await supabase.auth.getUser()
-      if (!active) return
-      if (!auth.user) {
-        router.replace(`/auth/signin?redirectTo=${encodeURIComponent(`/r/${roomId}`)}`)
-        return
+    async function ensureSession() {
+      try {
+        const { data: auth } = await supabase.auth.getUser()
+        if (!active) return
+        if (auth.user) {
+          setUserId(auth.user.id)
+          const anonymous = Boolean(auth.user.is_anonymous)
+          setIsGuest(anonymous)
+          if (anonymous) setGuestDisplayName(guestNameFromUid(auth.user.id))
+          return
+        }
+
+        const { data, error } = await supabase.auth.signInAnonymously()
+        if (!active) return
+        if (error || !data.user) {
+          router.replace(`/auth/signin?redirectTo=${encodeURIComponent(`/r/${roomId}`)}`)
+          return
+        }
+        setUserId(data.user.id)
+        setIsGuest(true)
+        setGuestDisplayName(guestNameFromUid(data.user.id))
+      } catch (error) {
+        console.error('Failed to establish session:', error)
+        if (active) {
+          router.replace(`/auth/signin?redirectTo=${encodeURIComponent(`/r/${roomId}`)}`)
+        }
       }
-      setUserId(auth.user.id)
-    })()
+    }
+
+    ensureSession()
     return () => { active = false }
   }, [roomId, router])
 
@@ -132,6 +160,29 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
   }, [roomId])
 
   useEffect(() => {
+    if (!userId) return
+    if (isGuest && !guestDisplayName) return
+    const alreadyParticipant = participants.some((p) => p.uid === userId)
+    if (alreadyParticipant) {
+      joinAttempted.current = true
+      setJoinError(null)
+      return
+    }
+    if (joinAttempted.current) return
+    joinAttempted.current = true
+    ;(async () => {
+      try {
+        await fnJoinRoom(roomId, isGuest ? guestDisplayName ?? undefined : undefined)
+        setJoinError(null)
+      } catch (error: any) {
+        console.error('Failed to auto-join room:', error)
+        setJoinError(error?.message || 'Unable to join room. Try refreshing the page.')
+        joinAttempted.current = false
+      }
+    })()
+  }, [userId, participants, roomId, isGuest, guestDisplayName])
+
+  useEffect(() => {
     if (!room?.status || navigated.current) return
     if (room.status === 'talk') {
       navigated.current = true
@@ -170,18 +221,29 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
 
   return (
     <div className="space-y-8 pb-16">
-      <section className="texture-panel space-y-4">
-        <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Room ready</p>
-        <h1 className="heading-font text-3xl sm:text-4xl">Share this code with your friend.</h1>
-        <p className="text-sm text-muted-foreground max-w-2xl">We&apos;ll hold here until both seats are filled. The conversation view opens automatically once someone joins.</p>
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="heading-font text-4xl tracking-[0.2em]">{displayCode}</div>
-          <Button onClick={() => handleCopy(displayCode, 'code')}>{copyCodeState === 'copied' ? 'Copied!' : 'Copy code'}</Button>
-        </div>
-        <div className="flex flex-wrap gap-3">
-          <Button variant="outline" onClick={() => handleCopy(shareLink, 'link')}>
-            {copyLinkState === 'copied' ? 'Link copied' : 'Copy invite link'}
-          </Button>
+      <section className="texture-panel">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+          <div className="space-y-4 flex-1">
+            <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Room ready</p>
+            <h1 className="heading-font text-3xl sm:text-4xl">Share this code with your friend.</h1>
+            <p className="text-sm text-muted-foreground max-w-2xl">We&apos;ll hold here until both seats are filled. The conversation view opens automatically once someone joins.</p>
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="heading-font text-4xl tracking-[0.2em]">{displayCode}</div>
+              <Button onClick={() => handleCopy(displayCode, 'code')}>{copyCodeState === 'copied' ? 'Copied!' : 'Copy code'}</Button>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Button variant="outline" onClick={() => handleCopy(shareLink, 'link')}>
+                {copyLinkState === 'copied' ? 'Link copied' : 'Copy invite link'}
+              </Button>
+            </div>
+          </div>
+          <div className="w-full max-w-sm rounded-3xl border border-border/70 bg-white/80 p-4 text-center lg:max-w-xs">
+            <div className="text-xs font-semibold uppercase tracking-[0.3em] text-muted-foreground mb-2">Instant access</div>
+            <div className="mx-auto flex items-center justify-center rounded-2xl border border-border/60 bg-white p-4">
+              <QRCodeSVG value={shareLink} size={180} level="Q" bgColor="#ffffff" fgColor="#0F172A" />
+            </div>
+            <p className="mt-4 text-sm text-muted-foreground">Scan to jump in as a guest—no account needed.</p>
+          </div>
         </div>
       </section>
 
@@ -227,6 +289,11 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
             <div className="text-xs text-muted-foreground">
               {seatsFilled ? 'Both players ready!' : 'Need help? Drop your friend the full link or code above.'}
             </div>
+            {joinError && (
+              <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {joinError}
+              </div>
+            )}
             {isHost && (
               <Button 
                 onClick={handleStartGame} 
