@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import Image from 'next/image'
 
 export default function HomePage() {
   const [user, setUser] = useState<any>(null)
@@ -31,7 +32,12 @@ export default function HomePage() {
     return () => { mounted = false; sub.subscription.unsubscribe() }
   }, [])
   return (
-    <div className="centered-card">
+    <div className="relative min-h-screen">
+      <div className="absolute top-8 left-8 flex items-center gap-3">
+        <Image src="/logo.svg" alt="Mimicry Logo" width={96} height={96} />
+        <span className="text-3xl font-heading">mimicry</span>
+      </div>
+      <div className="centered-card">
       <Card className="w-full max-w-2xl">
         <CardHeader>
           <div className="text-center space-y-2">
@@ -54,6 +60,7 @@ export default function HomePage() {
           )}
         </CardContent>
       </Card>
+      </div>
     </div>
   )
 }
