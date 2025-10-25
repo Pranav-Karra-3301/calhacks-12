@@ -5,9 +5,11 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { generateAvatarUrl } from '@/lib/avatar'
 
 export function GameCard() {
   const [user, setUser] = useState<any>(null)
+  const [avatarSeed, setAvatarSeed] = useState<string | null>(null)
 
   useEffect(() => {
     let mounted = true
@@ -18,7 +20,9 @@ export function GameCard() {
       setUser(u)
       // If signed in, ensure they have a display_name else send to onboarding
       if (u) {
-        const { data: p } = await supabase.from('profiles').select('display_name').eq('id', u.id).maybeSingle()
+        const { data: p } = await supabase.from('profiles').select('display_name, avatar_seed').eq('id', u.id).maybeSingle()
+        if (!mounted) return
+        if (p?.avatar_seed) setAvatarSeed(p.avatar_seed)
         if (!p?.display_name) {
           // Do not redirect if already on onboarding
           if (typeof window !== 'undefined' && window.location.pathname !== '/onboarding') {
@@ -29,7 +33,10 @@ export function GameCard() {
       }
     }
     init()
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setUser(s?.user ?? null))
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      setUser(s?.user ?? null)
+      if (!s?.user) setAvatarSeed(null)
+    })
     return () => { mounted = false; sub.subscription.unsubscribe() }
   }, [])
 
@@ -42,13 +49,28 @@ export function GameCard() {
             <p className="text-muted-foreground">1v1 AI Detection Challenge</p>
           </div>
         </CardHeader>
-        <CardContent className="flex flex-col sm:flex-row gap-3 justify-center">
-          <Link href="/r/new"><Button size="lg">CREATE ROOM</Button></Link>
-          <Link href="/join"><Button size="lg" variant="secondary">JOIN ROOM</Button></Link>
+        <CardContent className="flex flex-col sm:flex-row gap-3 justify-center w-full">
+          <Link href="/r/new" className="w-full sm:w-auto">
+            <Button size="lg" className="w-full sm:w-auto justify-center text-base font-semibold tracking-wider">
+              CREATE ROOM
+            </Button>
+          </Link>
+          <Link href="/join" className="w-full sm:w-auto">
+            <Button size="lg" variant="secondary" className="w-full sm:w-auto justify-center text-base font-semibold tracking-wider">
+              JOIN ROOM
+            </Button>
+          </Link>
         </CardContent>
-        <CardContent className="flex flex-col gap-2 items-center">
+        <CardContent className="flex flex-col gap-3 items-center">
           {user ? (
             <>
+              {avatarSeed && (
+                <img 
+                  src={generateAvatarUrl(avatarSeed)} 
+                  alt="Your avatar" 
+                  className="w-16 h-16 rounded-xl border-2 border-border"
+                />
+              )}
               <div className="text-sm">Signed in as {user.email}</div>
               <div className="flex gap-2">
                 <Link href="/profile"><Button variant="outline">Profile</Button></Link>
