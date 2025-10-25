@@ -5,14 +5,17 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
 import { fnAssignRoles } from '@/lib/functions'
+import { generateAvatarUrl } from '@/lib/avatar'
 
 type Participant = { uid: string; display_name: string | null; joined_at: string; role: string | null }
 type RoomMeta = { id: string; code: string | null; created_by: string | null; status: string | null }
+type ParticipantAvatar = { uid: string; avatar_seed: string | null }
 
 export default function RoomLobby({ params }: { params: { roomId: string } }) {
   const roomId = params.roomId
   const router = useRouter()
   const [participants, setParticipants] = useState<Participant[]>([])
+  const [participantAvatars, setParticipantAvatars] = useState<Map<string, string>>(new Map())
   const [room, setRoom] = useState<RoomMeta | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [copyCodeState, setCopyCodeState] = useState<'idle' | 'copied'>('idle')
@@ -56,6 +59,26 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
       .subscribe()
     return () => { mounted = false; supabase.removeChannel(channel) }
   }, [roomId])
+
+  // Fetch avatars for participants
+  useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      if (participants.length === 0) return
+      const uids = participants.map(p => p.uid)
+      const { data } = await supabase.from('profiles').select('id, avatar_seed').in('id', uids)
+      if (mounted && data) {
+        const avatarMap = new Map<string, string>()
+        data.forEach((profile: any) => {
+          if (profile.avatar_seed) {
+            avatarMap.set(profile.id, profile.avatar_seed)
+          }
+        })
+        setParticipantAvatars(avatarMap)
+      }
+    })()
+    return () => { mounted = false }
+  }, [participants])
 
   useEffect(() => {
     let mounted = true
@@ -133,9 +156,21 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
             {[0, 1].map((slot) => {
               const entry = participants[slot]
               const isYou = entry && entry.uid === userId
+              const avatarSeed = entry ? participantAvatars.get(entry.uid) : null
               return (
-                <div key={slot} className="flex items-center justify-between rounded-2xl border border-border/70 px-4 py-4 bg-white/80">
-                  <div>
+                <div key={slot} className="flex items-center gap-3 rounded-2xl border border-border/70 px-4 py-4 bg-white/80">
+                  {avatarSeed ? (
+                    <img 
+                      src={generateAvatarUrl(avatarSeed)} 
+                      alt={entry?.display_name || 'Player avatar'} 
+                      className="w-12 h-12 rounded-xl border border-border/70 flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-xl border border-border/70 bg-muted flex-shrink-0 flex items-center justify-center text-xl">
+                      {entry ? '👤' : '⏳'}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium">
                       {entry ? (entry.display_name || entry.uid.slice(0, 6)) : 'Waiting for player'}
                       {isYou ? <span className="ml-2 text-xs text-[#1F4B3A]">you</span> : null}
@@ -144,7 +179,7 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
                       {entry ? 'Joined ' + new Date(entry.joined_at).toLocaleTimeString() : 'Share the code to invite'}
                     </div>
                   </div>
-                  <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
+                  <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground flex-shrink-0">
                     {entry?.role ? entry.role : slot === 0 ? 'HOST' : 'GUEST'}
                   </div>
                 </div>
