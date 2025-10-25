@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
-const MODEL = 'gpt-oss-20b'
+const MODEL = 'llama-3.3-70b-versatile'
 
 export async function POST(request: Request) {
   if (!GROQ_API_KEY) return NextResponse.json({ error: 'Missing GROQ_API_KEY' }, { status: 500 })
