@@ -47,14 +47,18 @@ export class DeepgramLiveTranscriber {
         utterances: true,       // Get complete utterances
         interim_results: true,  // Real-time updates
       })
+      if (!this.connection) {
+        throw new Error('Failed to open Deepgram live connection')
+      }
+      const connection = this.connection
 
       // Set up event listeners
-      this.connection.on(LiveTranscriptionEvents.Open, () => {
+      connection.on(LiveTranscriptionEvents.Open, () => {
         console.log('[Deepgram] WebSocket connection opened')
         this.startMicrophoneStream()
       })
 
-      this.connection.on(LiveTranscriptionEvents.Transcript, (data: any) => {
+      connection.on(LiveTranscriptionEvents.Transcript, (data: any) => {
         const transcript = data.channel?.alternatives?.[0]?.transcript
         const words = data.channel?.alternatives?.[0]?.words || []
         const isFinal = data.is_final || false
@@ -72,20 +76,20 @@ export class DeepgramLiveTranscriber {
         }
       })
 
-      this.connection.on(LiveTranscriptionEvents.Error, (error: any) => {
+      connection.on(LiveTranscriptionEvents.Error, (error: any) => {
         console.error('[Deepgram] WebSocket error:', error)
         this.onError(new Error(error.message || 'Deepgram connection error'))
       })
 
-      this.connection.on(LiveTranscriptionEvents.Warning, (warning: any) => {
+      connection.on(LiveTranscriptionEvents.Warning, (warning: any) => {
         console.warn('[Deepgram] Warning:', warning)
       })
 
-      this.connection.on(LiveTranscriptionEvents.Close, () => {
+      connection.on(LiveTranscriptionEvents.Close, () => {
         console.log('[Deepgram] WebSocket connection closed')
       })
 
-      this.connection.on(LiveTranscriptionEvents.Metadata, (metadata: any) => {
+      connection.on(LiveTranscriptionEvents.Metadata, (metadata: any) => {
         console.log('[Deepgram] Metadata received:', metadata)
       })
 
