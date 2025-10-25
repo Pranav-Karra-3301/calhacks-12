@@ -9,7 +9,7 @@ export async function POST(request: Request) {
   try {
     const { transcript = [] } = await request.json().catch(() => ({ transcript: [] })) as { transcript?: string[] }
     const lines = Array.isArray(transcript) ? transcript : []
-    const summary = lines.slice(-6).join('\n') || 'No prior conversation. Suggest engaging openers.'
+    const summary = lines.join('\n') || 'No prior conversation. Suggest engaging openers.'
 
     const completion = await fetch(GROQ_URL, {
       method: 'POST',

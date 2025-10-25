@@ -13,7 +13,22 @@ export class ChunkedRecorder {
   private options: RecorderOptions
 
   constructor(options: RecorderOptions = {}) {
-    this.options = { mimeType: 'audio/webm;codecs=opus', timesliceMs: 1000, ...options }
+    // Try MP3 first, fallback to WAV, then WebM as last resort
+    const mimeType = options.mimeType || (
+      MediaRecorder.isTypeSupported('audio/mpeg') 
+        ? 'audio/mpeg' 
+        : MediaRecorder.isTypeSupported('audio/wav')
+        ? 'audio/wav'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : 'audio/webm;codecs=opus'
+    )
+    
+    this.options = { 
+      mimeType, 
+      timesliceMs: 3000, // 3 seconds for complete audio segments
+      ...options 
+    }
   }
 
   async start() {
