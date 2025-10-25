@@ -4,13 +4,19 @@ import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { supabase } from '@/lib/supabase'
+import { fnJoinRoom } from '@/lib/functions'
 
 export default function JoinPage() {
   const [code, setCode] = useState('')
   const router = useRouter()
-  function join() {
-    if (!code) return
-    router.push(`/r/${code.toUpperCase()}`)
+  async function join() {
+    const roomId = code.trim().toUpperCase()
+    if (!roomId) return
+    const { data: auth } = await supabase.auth.getUser()
+    if (!auth.user) { router.push('/auth/signin'); return }
+    await fnJoinRoom(roomId, auth.user.user_metadata?.name ?? null)
+    router.push(`/r/${roomId}`)
   }
   return (
     <div className="centered-card">
@@ -24,4 +30,3 @@ export default function JoinPage() {
     </div>
   )
 }
-
