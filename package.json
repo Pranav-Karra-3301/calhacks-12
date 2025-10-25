@@ -11,12 +11,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@deepgram/sdk": "^4.11.2",
     "@livekit/components-react": "^2.6.4",
     "@supabase/supabase-js": "^2.76.1",
     "clsx": "^2.1.1",
     "livekit-client": "^2.5.8",
     "livekit-server-sdk": "^2.6.1",
     "next": "^14.2.5",
+    "qrcode.react": "^4.2.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "tailwind-merge": "^2.5.2"

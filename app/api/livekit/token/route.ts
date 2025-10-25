@@ -17,8 +17,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Create Supabase client with the user's token
-    const supabase = createClient(
+    // Create anon client to verify user authentication
+    const anonClient = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
@@ -29,13 +29,19 @@ export async function POST(request: Request) {
     )
 
     // Verify user
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    const { data: { user }, error: authError } = await anonClient.auth.getUser()
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    // Use service role client to check participant (bypass RLS)
+    const serviceClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    )
+
     // Check if user is a participant in the room
-    const { data: participant, error: participantError } = await supabase
+    const { data: participant, error: participantError } = await serviceClient
       .from('participants')
       .select('uid, display_name')
       .eq('room_id', roomId)

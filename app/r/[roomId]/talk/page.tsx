@@ -6,10 +6,12 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { Timer } from '@/components/Timer'
+import { MicSelector } from '@/components/ui/mic-selector'
+import { ScrollingWaveform } from '@/components/ui/waveform'
 import { supabase, getAccessToken, functionsUrl } from '@/lib/supabase'
 import { fnActivateAI, fnDetectorGuess } from '@/lib/functions'
 import { publishAudioBlob, setLocalAudioEnabled } from '@/lib/livekit-audio'
-import { ChunkedRecorder } from '@/lib/recorder'
+import { DeepgramLiveTranscriber } from '@/lib/deepgram-transcription'
 
 const MODERATOR_VOICE_ID = 'kdmDKE6EkgrWrrykO9Qt'
 const AI_MAX_SECONDS = 180
@@ -26,7 +28,7 @@ type RoomInfo = {
 }
 
 type Participant = { uid: string; display_name: string | null; joined_at: string }
-type TranscriptLine = { id: number; text: string; uid: string | null; created_at: string }
+type TranscriptLine = { id: number; text: string; uid: string | null; created_at: string; speaker_id?: number | null }
 
 export default function TalkPage({ params }: { params: { roomId: string } }) {
   const roomId = params.roomId
@@ -70,8 +72,12 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [suggestionLoading, setSuggestionLoading] = useState(false)
   
-  // Transcription recorder
-  const recRef = useRef<ChunkedRecorder | null>(null)
+  // Deepgram transcription
+  const deepgramRef = useRef<DeepgramLiveTranscriber | null>(null)
+  
+  // Mic controls
+  const [selectedMic, setSelectedMic] = useState('')
+  const [isMicMuted, setIsMicMuted] = useState(false)
 
   // Get user auth
   useEffect(() => {
@@ -88,14 +94,42 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     return () => { active = false }
   }, [roomId, router])
 
-  // Load participants from database
+  // Load participants and room data from API (bypasses RLS)
   useEffect(() => {
+    if (!userId) return
     let mounted = true
-    ;(async () => {
-      const { data } = await supabase.from('participants').select('uid, display_name, joined_at').eq('room_id', roomId)
-      if (mounted) setParticipants((data ?? []) as Participant[])
-    })()
-    const channel = supabase.channel(`talk-${roomId}-participants`)
+    
+    async function fetchRoomData() {
+      try {
+        const { data: session } = await supabase.auth.getSession()
+        const token = session.session?.access_token
+        
+        const response = await fetch('/api/functions/get-room', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({ roomId }),
+        })
+        
+        if (response.ok) {
+          const data = await response.json()
+          if (mounted) {
+            setParticipants(data.participants as Participant[])
+            if (data.room) setRoom(data.room as RoomInfo)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch room data:', err)
+      }
+    }
+    
+    // Fetch initial data
+    fetchRoomData()
+    
+    // Subscribe to realtime updates for participants
+    const participantsChannel = supabase.channel(`talk-${roomId}-participants`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${roomId}` }, (payload) => {
         setParticipants((prev) => {
           if (payload.eventType === 'INSERT') return [...prev, payload.new as Participant]
@@ -105,27 +139,19 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
         })
       })
       .subscribe()
-    return () => { mounted = false; supabase.removeChannel(channel) }
-  }, [roomId])
-
-  // Load room info
-  useEffect(() => {
-    if (!userId) return
-    let mounted = true
-    ;(async () => {
-      const { data } = await supabase
-        .from('rooms')
-        .select('id, topic, created_by, target_uid, detector_uid, ai_activated_at, started_at, status')
-        .eq('id', roomId)
-        .maybeSingle()
-      if (mounted && data) setRoom(data as RoomInfo)
-    })()
-    const channel = supabase.channel(`talk-${roomId}-meta`)
+    
+    // Subscribe to realtime updates for room
+    const roomChannel = supabase.channel(`talk-${roomId}-meta`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
         setRoom(payload.new as RoomInfo)
       })
       .subscribe()
-    return () => { mounted = false; supabase.removeChannel(channel) }
+    
+    return () => { 
+      mounted = false
+      supabase.removeChannel(participantsChannel)
+      supabase.removeChannel(roomChannel)
+    }
   }, [roomId, userId])
 
   // Load transcripts
@@ -150,7 +176,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
   // Update transcript ref
   useEffect(() => {
-    transcriptsRef.current = transcripts.slice(-6).map((line) => line.text)
+    transcriptsRef.current = transcripts.slice(-12).map((line) => line.text)
   }, [transcripts])
 
   // Set timer
@@ -264,49 +290,84 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     }
   }, [userId, roomId])
 
-  // Start transcription recorder
+  // Handle mute/unmute
+  useEffect(() => {
+    if (!livekitRoom.current || !isConnected) return
+    setLocalAudioEnabled(livekitRoom.current, !isMicMuted)
+  }, [isMicMuted, isConnected])
+
+  // Start Deepgram live transcription - TRUE real-time streaming!
   useEffect(() => {
     if (!userId || !isConnected || aiActive) return
-    
-    let cancelled = false
-    
-    async function startRecorder() {
+
+    const DEEPGRAM_API_KEY = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY
+
+    if (!DEEPGRAM_API_KEY) {
+      console.error('[Deepgram] API key not found in environment')
+      return
+    }
+
+    async function startDeepgram() {
       try {
-        recRef.current = new ChunkedRecorder({
-          timesliceMs: 1500,
-          onChunk: async (blob, seq) => {
-            if (!userId || cancelled || aiActive) return
-            try {
-              const chunkKey = `${Date.now()}-${seq}`
-              await supabase.storage.from('recordings').upload(
-                `rooms/${roomId}/utterances/${chunkKey}.webm`,
-                blob,
-                { upsert: true, contentType: 'audio/webm', metadata: { uid: userId } as any }
-              )
-              const token = await getAccessToken()
-              const fxUrl = `${functionsUrl()}/transcribe-chunk?roomId=${encodeURIComponent(roomId)}&chunkId=${chunkKey}&seq=${seq}`
-              await fetch(fxUrl, {
-                method: 'POST',
-                headers: { 'Authorization': token ? `Bearer ${token}` : '', 'Content-Type': 'audio/webm' },
-                body: blob,
-              })
-            } catch (_) {
-              // ignore chunk errors
+        console.log('[Deepgram] Starting live transcription...')
+
+        deepgramRef.current = new DeepgramLiveTranscriber(
+          DEEPGRAM_API_KEY!,
+          // On transcript callback
+          async (data) => {
+            if (!data.isFinal || !data.transcript || data.transcript.trim().length === 0) {
+              // Only save final transcripts with actual content
+              return
             }
+
+            console.log(`[Deepgram] Final transcript from speaker ${data.speaker}:`, data.transcript)
+
+            // Save to Supabase
+            try {
+              const { error } = await supabase
+                .from('transcripts')
+                .insert({
+                  room_id: roomId,
+                  uid: userId,
+                  text: data.transcript,
+                  speaker_id: data.speaker,
+                  // Add timing data from first and last word
+                  start_ms: data.words && data.words.length > 0
+                    ? Math.floor(data.words[0].start * 1000)
+                    : null,
+                  end_ms: data.words && data.words.length > 0
+                    ? Math.floor(data.words[data.words.length - 1].end * 1000)
+                    : null,
+                })
+
+              if (error) {
+                console.error('[Deepgram] Failed to save transcript:', error)
+              } else {
+                console.log('[Deepgram] Transcript saved to database')
+              }
+            } catch (error) {
+              console.error('[Deepgram] Error saving transcript:', error)
+            }
+          },
+          // On error callback
+          (error) => {
+            console.error('[Deepgram] Transcription error:', error)
           }
-        })
-        await recRef.current.start()
-      } catch (_) {
-        // mic unavailable
+        )
+
+        await deepgramRef.current.start()
+        console.log('[Deepgram] Live transcription started successfully!')
+      } catch (error) {
+        console.error('[Deepgram] Failed to start:', error)
       }
     }
-    
-    startRecorder()
-    
+
+    startDeepgram()
+
     return () => {
-      cancelled = true
-      recRef.current?.stop()
-      recRef.current = null
+      console.log('[Deepgram] Cleaning up...')
+      deepgramRef.current?.stop()
+      deepgramRef.current = null
     }
   }, [roomId, userId, isConnected, aiActive])
 
@@ -346,10 +407,13 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   }, [])
 
   useEffect(() => {
+    // Only fetch suggestions after LiveKit is connected
+    if (!isConnected) return
+    
     fetchSuggestions()
-    const id = setInterval(fetchSuggestions, 10000)
+    const id = setInterval(fetchSuggestions, 30000)
     return () => clearInterval(id)
-  }, [fetchSuggestions])
+  }, [fetchSuggestions, isConnected])
 
   // Helper functions
   const role = (() => {
@@ -362,6 +426,19 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
   const topic = room?.topic || 'Freestyle banter'
   const isHost = room?.created_by === userId
+
+  // Debug role
+  useEffect(() => {
+    if (room && userId) {
+      console.log('Role debug:', {
+        userId,
+        role,
+        target_uid: room.target_uid,
+        detector_uid: room.detector_uid,
+        created_by: room.created_by
+      })
+    }
+  }, [role, room, userId])
 
   function nameFor(uid: string | null) {
     if (!uid) return 'System'
@@ -555,23 +632,18 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   }
 
   return (
-    <div className="space-y-8 pb-16">
-      <section className="texture-panel space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
-              Live conversation {!isConnected && '(connecting...)'}
-            </p>
-            <h1 className="heading-font text-3xl sm:text-[40px]">{topic}</h1>
-          </div>
-          <div className="text-sm text-muted-foreground">Elapsed • <Timer start={timerStart} /></div>
+    <div className="min-h-screen flex flex-col p-4 gap-4">
+      <div className="flex items-center justify-between flex-shrink-0">
+        <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
+          {isConnected ? 'Connected' : 'Connecting...'}
         </div>
-        <p className="text-sm text-muted-foreground max-w-3xl">
-          Groq keeps the transcript rolling while ElevenLabs powers the voices. Flow naturally, stay alert.
-        </p>
-      </section>
+        <div className="text-sm text-muted-foreground">Elapsed • <Timer start={timerStart} /></div>
+        <Button variant="outline" size="sm" onClick={() => router.push('/')}>
+          End Call
+        </Button>
+      </div>
 
-      <section className="grid gap-6 lg:grid-cols-[1.7fr_1fr]">
+      <section className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
         <div className="space-y-6">
           {/* Participant Cards */}
           <div className="grid gap-4 md:grid-cols-2">
@@ -580,50 +652,63 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
               const label = entry ? nameFor(entry.uid) : idx === 0 ? 'Host' : 'Guest'
               const personaActive = aiActive && entry?.uid === room.target_uid
               const isCurrentlySpeaking = entry && isSpeaking[entry.uid]
+              const isYou = entry?.uid === userId
               
               return (
-                <div key={idx} className="rounded-3xl border border-border/80 bg-gradient-to-br from-[#F3EFE8] to-[#E3DDD3] p-5 h-52 flex flex-col justify-between">
-                  <div className="text-sm uppercase tracking-[0.3em] text-muted-foreground">
-                    {idx === 0 ? 'Speaker A' : 'Speaker B'}
+                <div key={idx} className="rounded-2xl border border-border/80 bg-gradient-to-br from-[#F3EFE8] to-[#E3DDD3] p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                        {idx === 0 ? 'Speaker A' : 'Speaker B'}
+                      </div>
+                      <div className="heading-font text-lg">{label}</div>
+                      {isYou && <span className="text-xs text-[#1F4B3A]">(you)</span>}
+                    </div>
+                    <div className="text-xs text-muted-foreground flex items-center gap-1">
+                      <span className={`h-2 w-2 rounded-full ${isCurrentlySpeaking ? 'bg-[#1F4B3A] animate-pulse' : 'bg-[#B6ADA6]'}`}></span>
+                      {personaActive ? 'AI' : 'Human'}
+                    </div>
                   </div>
-                  <div className="heading-font text-2xl">{label}</div>
-                  <div className="text-xs text-muted-foreground flex items-center gap-2">
-                    <span className={`h-2 w-2 rounded-full ${isCurrentlySpeaking ? 'bg-[#1F4B3A] animate-pulse' : 'bg-[#B6ADA6]'}`}></span>
-                    {personaActive ? 'AI persona live' : 'Human voice'}
-                  </div>
+                  
+                  {isYou && (
+                    <>
+                      <MicSelector
+                        value={selectedMic}
+                        onValueChange={setSelectedMic}
+                        muted={isMicMuted}
+                        onMutedChange={setIsMicMuted}
+                        disabled={aiActive}
+                      />
+                      <div className="flex justify-center">
+                        <ScrollingWaveform active={!isMicMuted && isConnected} height={40} />
+                      </div>
+                    </>
+                  )}
+                  
+                  {!isYou && entry && (
+                    <div className="flex justify-center pt-2">
+                      <ScrollingWaveform active={isConnected && isCurrentlySpeaking} height={40} />
+                    </div>
+                  )}
                 </div>
               )
             })}
           </div>
 
-          {/* Waveform */}
-          <div className="rounded-3xl border border-border/80 bg-white/80 p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm text-muted-foreground">Audio Waveform</div>
-                <div className="text-xs text-muted-foreground">
-                  {isConnected ? 'Connected to LiveKit' : 'Connecting...'}
-                </div>
-              </div>
-            </div>
-            <div className="wave-bars">
-              {Array.from({ length: 32 }).map((_, i) => (
-                <span key={i} style={{ height: `${20 + (i % 5) * 15}%`, ['--delay' as any]: `${i * 40}ms` }} />
-              ))}
-            </div>
-          </div>
-
           {/* Transcript */}
           <Card>
-            <CardHeader className="space-y-2">
-              <div className="heading-font text-2xl">Transcript</div>
-              <p className="text-sm text-muted-foreground">Powered by Groq Whisper Turbo</p>
+            <CardHeader className="space-y-1 py-3">
+              <div className="heading-font text-xl">Transcript</div>
+              <p className="text-xs text-muted-foreground">Powered by Deepgram Nova-3 • Real-time streaming</p>
             </CardHeader>
-            <CardContent className="space-y-4 max-h-96 overflow-y-auto">
+            <CardContent className="space-y-3 max-h-64 overflow-y-auto">
               {transcripts.map((line) => (
                 <div key={line.id} className="rounded-2xl border border-border/60 p-3 bg-white/80">
                   <div className="text-xs text-muted-foreground">
-                    {nameFor(line.uid)} · {new Date(line.created_at).toLocaleTimeString()}
+                    {nameFor(line.uid)}
+                    {line.speaker_id !== undefined && line.speaker_id !== null && ` (Speaker ${line.speaker_id})`}
+                    {' · '}
+                    {new Date(line.created_at).toLocaleTimeString()}
                   </div>
                   <div className="text-sm mt-1">{line.text}</div>
                 </div>
@@ -635,18 +720,35 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
               )}
             </CardContent>
           </Card>
+
+          {/* Topic Suggestions */}
+          <Card>
+            <CardHeader className="space-y-1 py-3">
+              <div className="heading-font text-xl">Topic Sparks</div>
+              <p className="text-xs text-muted-foreground">Updates every 30s</p>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                {suggestions.map((idea, idx) => (
+                  <span key={idx} className="px-3 py-1 rounded-full bg-[#E7E2DA] text-xs">{idea}</span>
+                ))}
+              </div>
+              <Button variant="outline" size="sm" onClick={fetchSuggestions} disabled={suggestionLoading}>
+                {suggestionLoading ? 'Refreshing…' : 'Refresh now'}
+              </Button>
+            </CardContent>
+          </Card>
         </div>
 
-        <div className="space-y-6">
+        <div className="space-y-4">
           {/* Moderator */}
           <Card>
-            <CardHeader className="space-y-1">
-              <div className="heading-font text-2xl">Moderator</div>
-              <p className="text-sm text-muted-foreground">ElevenLabs voice coach</p>
+            <CardHeader className="space-y-1 py-3">
+              <div className="heading-font text-xl">Moderator</div>
+              <p className="text-xs text-muted-foreground">ElevenLabs voice coach</p>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <Button variant="outline" onClick={() => playModeratorIntro(true)}>Replay intro</Button>
-              <div className="space-y-3 max-h-48 overflow-y-auto text-sm">
+            <CardContent className="space-y-3">
+              <div className="space-y-2 max-h-32 overflow-y-auto text-sm">
                 {moderatorMessages.map((msg) => (
                   <div key={msg.id} className="rounded-2xl border border-border/60 bg-white/80 p-3">{msg.text}</div>
                 ))}
@@ -664,30 +766,12 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
             </CardContent>
           </Card>
 
-          {/* Topic Suggestions */}
-          <Card>
-            <CardHeader className="space-y-1">
-              <div className="heading-font text-2xl">Groq topic sparks</div>
-              <p className="text-sm text-muted-foreground">New ideas every 10 seconds</p>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex flex-wrap gap-2">
-                {suggestions.map((idea, idx) => (
-                  <span key={idx} className="px-3 py-1 rounded-full bg-[#E7E2DA] text-xs">{idea}</span>
-                ))}
-              </div>
-              <Button variant="outline" size="sm" onClick={fetchSuggestions} disabled={suggestionLoading}>
-                {suggestionLoading ? 'Refreshing…' : 'Refresh now'}
-              </Button>
-            </CardContent>
-          </Card>
-
           {/* Controls */}
           <Card>
-            <CardHeader className="space-y-1">
-              <div className="heading-font text-2xl">Controls</div>
+            <CardHeader className="py-3">
+              <div className="heading-font text-xl">Controls</div>
             </CardHeader>
-            <CardContent className="space-y-4 text-sm">
+            <CardContent className="space-y-3 text-sm">
               {isHost && (
                 <div className="space-y-2">
                   <div className="text-xs text-muted-foreground">
@@ -699,7 +783,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
                       style={{ width: `${Math.min(100, (aiCountdown / AI_MAX_SECONDS) * 100)}%` }} 
                     />
                   </div>
-                  <Button onClick={handleActivateAI} disabled={aiActive || aiBusy || !isConnected}>
+                  <Button onClick={handleActivateAI} disabled={aiActive || aiBusy || !isConnected} className="w-full">
                     {aiActive ? 'Persona live' : aiBusy ? 'Warming up…' : 'Let AI persona take over'}
                   </Button>
                 </div>
@@ -707,13 +791,12 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
               {role === 'detector' && (
                 <div className="space-y-2">
                   <div className="text-xs text-muted-foreground">One guess. Use it wisely.</div>
-                  <Button variant="secondary" onClick={handleDetectorGuess} disabled={!!detectorResult}>
+                  <Button variant="secondary" onClick={handleDetectorGuess} disabled={!!detectorResult} className="w-full">
                     Call it: AI is speaking
                   </Button>
                   {detectorResult && <div className="text-xs text-muted-foreground">{detectorResult}</div>}
                 </div>
               )}
-              <Button variant="ghost" onClick={() => router.push('/')}>Leave call</Button>
             </CardContent>
           </Card>
         </div>

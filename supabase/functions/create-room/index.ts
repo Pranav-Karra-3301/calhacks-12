@@ -1,8 +1,11 @@
-import { getAuthUser, json, readJson, serviceClient } from "../_shared/supabaseClient.ts";
+import { corsHeaders, getAuthUser, json, readJson, serviceClient } from "../_shared/supabaseClient.ts";
 
 type Body = { roomId?: string; displayName?: string | null };
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
   const user = await getAuthUser(req);
   if (!user) return json({ error: "unauthorized" }, { status: 401 });
   const { roomId, displayName } = await readJson<Body>(req);
@@ -32,4 +35,3 @@ Deno.serve(async (req) => {
 
   return json({ roomId });
 });
-
