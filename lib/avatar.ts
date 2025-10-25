@@ -10,6 +10,7 @@ export interface AvatarOptions {
   bodyIconProbability?: number
   
   // Style options
+  base?: string[]
   beard?: string[]
   body?: string[]
   bodyIcon?: string[]
@@ -24,11 +25,16 @@ export interface AvatarOptions {
   // Visual options
   backgroundColor?: string[]
   backgroundType?: string[]
+  backgroundRotation?: number[]
   flip?: boolean
   rotate?: number
   scale?: number
   radius?: number
   size?: number
+  translateX?: number
+  translateY?: number
+  clip?: boolean
+  randomizeIds?: boolean
 }
 
 /**
@@ -76,6 +82,9 @@ export function generateAvatarUrl(seed: string, options?: AvatarOptions): string
   if (options.bodyIcon && options.bodyIcon.length > 0) {
     params.append('bodyIcon', options.bodyIcon.join(','))
   }
+  if (options.base && options.base.length > 0) {
+    params.append('base', options.base.join(','))
+  }
   if (options.brows && options.brows.length > 0) {
     params.append('brows', options.brows.join(','))
   }
@@ -105,6 +114,9 @@ export function generateAvatarUrl(seed: string, options?: AvatarOptions): string
   if (options.backgroundType && options.backgroundType.length > 0) {
     params.append('backgroundType', options.backgroundType.join(','))
   }
+  if (options.backgroundRotation && options.backgroundRotation.length > 0) {
+    params.append('backgroundRotation', options.backgroundRotation.join(','))
+  }
   if (options.flip !== undefined) {
     params.append('flip', options.flip.toString())
   }
@@ -120,7 +132,18 @@ export function generateAvatarUrl(seed: string, options?: AvatarOptions): string
   if (options.size !== undefined) {
     params.append('size', options.size.toString())
   }
+  if (options.translateX !== undefined) {
+    params.append('translateX', options.translateX.toString())
+  }
+  if (options.translateY !== undefined) {
+    params.append('translateY', options.translateY.toString())
+  }
+  if (options.clip !== undefined) {
+    params.append('clip', options.clip.toString())
+  }
+  if (options.randomizeIds !== undefined) {
+    params.append('randomizeIds', options.randomizeIds.toString())
+  }
   
   return `${baseUrl}?${params.toString()}`
 }
-
