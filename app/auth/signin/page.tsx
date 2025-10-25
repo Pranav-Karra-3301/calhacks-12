@@ -5,8 +5,10 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 
 export default function SignInPage() {
+  const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -16,12 +18,18 @@ export default function SignInPage() {
     setLoading(true)
     setError(null)
     const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) setError(error.message)
+    if (error) {
+      setError(error.message)
+      setLoading(false)
+      return
+    }
     setLoading(false)
+    router.replace('/onboarding')
   }
 
   async function signInGithub() {
-    await supabase.auth.signInWithOAuth({ provider: 'github' })
+    const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/onboarding` : undefined
+    await supabase.auth.signInWithOAuth({ provider: 'github', options: { redirectTo } })
   }
 
   return (
@@ -40,4 +48,3 @@ export default function SignInPage() {
     </div>
   )
 }
-

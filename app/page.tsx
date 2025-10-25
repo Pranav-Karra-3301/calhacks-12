@@ -8,9 +8,27 @@ import { supabase } from '@/lib/supabase'
 export default function HomePage() {
   const [user, setUser] = useState<any>(null)
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUser(data.user))
+    let mounted = true
+    async function init() {
+      const { data } = await supabase.auth.getUser()
+      const u = data.user
+      if (!mounted) return
+      setUser(u)
+      // If signed in, ensure they have a display_name else send to onboarding
+      if (u) {
+        const { data: p } = await supabase.from('profiles').select('display_name').eq('id', u.id).maybeSingle()
+        if (!p?.display_name) {
+          // Do not redirect if already on onboarding
+          if (typeof window !== 'undefined' && window.location.pathname !== '/onboarding') {
+            window.location.href = '/onboarding'
+            return
+          }
+        }
+      }
+    }
+    init()
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setUser(s?.user ?? null))
-    return () => { sub.subscription.unsubscribe() }
+    return () => { mounted = false; sub.subscription.unsubscribe() }
   }, [])
   return (
     <div className="centered-card">
