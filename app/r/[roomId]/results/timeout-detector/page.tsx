@@ -11,11 +11,10 @@ export default function ResultTimeoutDetector() {
           <div>Conversation ended. Target never activated AI.</div>
           <div className="text-sm text-muted-foreground">🏆 DETECTOR WINS!</div>
           <div className="flex gap-3">
-            <Link href="../../.."><Button>PLAY AGAIN</Button></Link>
+            <Link href="/"><Button>PLAY AGAIN</Button></Link>
           </div>
         </CardContent>
       </Card>
     </div>
   )
 }
-
