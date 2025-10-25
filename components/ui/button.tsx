@@ -8,10 +8,10 @@ type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function Button({ className, variant = 'default', size = 'md', ...props }: ButtonProps) {
   const variants: Record<string, string> = {
-    default: 'bg-primary text-primary-foreground hover:opacity-90',
-    secondary: 'bg-secondary text-secondary-foreground hover:opacity-90',
-    outline: 'border border-border hover:bg-muted',
-    ghost: 'hover:bg-muted'
+    default: 'bg-[#35302E] text-[#F7F5F3] hover:bg-[#2B2725]',
+    secondary: 'bg-[#1F4B3A] text-[#F7F5F3] hover:bg-[#18382C]',
+    outline: 'border border-border text-[#35302E] hover:bg-[#EDE8E2]',
+    ghost: 'text-[#35302E] hover:bg-[#EDE8E2]/60'
   }
   const sizes: Record<string, string> = {
     sm: 'h-8 px-3 text-sm rounded-md',
@@ -20,9 +20,8 @@ export function Button({ className, variant = 'default', size = 'md', ...props }
   }
   return (
     <button
-      className={cn('inline-flex items-center justify-center font-medium transition-colors', variants[variant], sizes[size], className)}
+      className={cn('inline-flex items-center justify-center font-medium transition-colors rounded-full tracking-tight', variants[variant], sizes[size], className)}
       {...props}
     />
   )
 }
-
