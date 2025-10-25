@@ -5,8 +5,10 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 
 export default function SignUpPage() {
+  const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -15,13 +17,23 @@ export default function SignUpPage() {
   async function signUpEmail() {
     setLoading(true)
     setError(null)
-    const { error } = await supabase.auth.signUp({ email, password })
-    if (error) setError(error.message)
+    const { data, error } = await supabase.auth.signUp({ email, password })
+    if (error) {
+      setError(error.message)
+      setLoading(false)
+      return
+    }
+    // If email confirmations are disabled, session is present; otherwise try immediate sign-in to bypass confirmations (requires confirmations disabled in project settings)
+    if (!data.session) {
+      await supabase.auth.signInWithPassword({ email, password }).catch(() => {})
+    }
     setLoading(false)
+    router.replace('/onboarding')
   }
 
   async function signInGithub() {
-    await supabase.auth.signInWithOAuth({ provider: 'github' })
+    const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/onboarding` : undefined
+    await supabase.auth.signInWithOAuth({ provider: 'github', options: { redirectTo } })
   }
 
   return (
@@ -40,4 +52,3 @@ export default function SignUpPage() {
     </div>
   )
 }
-
