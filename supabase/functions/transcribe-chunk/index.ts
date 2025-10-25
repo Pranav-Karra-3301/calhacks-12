@@ -4,7 +4,7 @@
 // - GROQ_API_KEY
 // Usage: POST /transcribe-chunk?roomId=...&chunkId=...&seq=...
 
-import { getAuthUser, json, serviceClient } from "../_shared/supabaseClient.ts";
+import { corsHeaders, getAuthUser, json, serviceClient } from "../_shared/supabaseClient.ts";
 
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
 const GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
@@ -36,6 +36,9 @@ async function transcribeBinaryWebm(blob: Uint8Array, filename: string) {
 }
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
   try {
     const user = await getAuthUser(req);
     if (!user) return json({ error: "unauthorized" }, { status: 401 });
@@ -73,4 +76,3 @@ Deno.serve(async (req) => {
     return json({ error: String(e) }, { status: 500 });
   }
 });
-
