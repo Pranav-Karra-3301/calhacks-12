@@ -17,7 +17,7 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
   const [userId, setUserId] = useState<string | null>(null)
   const [copyCodeState, setCopyCodeState] = useState<'idle' | 'copied'>('idle')
   const [copyLinkState, setCopyLinkState] = useState<'idle' | 'copied'>('idle')
-  const attemptedStart = useRef(false)
+  const [startingGame, setStartingGame] = useState(false)
   const navigated = useRef(false)
 
   const shareLink = typeof window === 'undefined' ? `https://mimic.game/r/${roomId}` : `${window.location.origin}/r/${roomId}`
@@ -40,10 +40,44 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
 
   useEffect(() => {
     let mounted = true
-    ;(async () => {
-      const { data } = await supabase.from('participants').select('*').eq('room_id', roomId)
-      if (mounted) setParticipants((data ?? []) as Participant[])
-    })()
+    let pollInterval: NodeJS.Timeout | null = null
+    
+    async function fetchRoomData() {
+      try {
+        const { data: auth } = await supabase.auth.getUser()
+        if (!auth.user || !mounted) return
+        
+        const { data: session } = await supabase.auth.getSession()
+        const token = session.session?.access_token
+        
+        const response = await fetch('/api/functions/get-room', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({ roomId }),
+        })
+        
+        if (response.ok) {
+          const data = await response.json()
+          if (mounted) {
+            setParticipants(data.participants as Participant[])
+            if (data.room) setRoom(data.room as RoomMeta)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch room data:', err)
+      }
+    }
+    
+    // Fetch initial data
+    fetchRoomData()
+    
+    // Poll every 2 seconds for updates (fallback for realtime)
+    pollInterval = setInterval(fetchRoomData, 2000)
+    
+    // Also subscribe to realtime updates (primary mechanism)
     const channel = supabase.channel(`room-${roomId}-participants`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${roomId}` }, (payload) => {
         setParticipants((prev) => {
@@ -54,15 +88,18 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
         })
       })
       .subscribe()
-    return () => { mounted = false; supabase.removeChannel(channel) }
+    
+    return () => { 
+      mounted = false
+      if (pollInterval) clearInterval(pollInterval)
+      supabase.removeChannel(channel)
+    }
   }, [roomId])
 
   useEffect(() => {
     let mounted = true
-    ;(async () => {
-      const { data } = await supabase.from('rooms').select('id, code, created_by, status').eq('id', roomId).maybeSingle()
-      if (mounted && data) setRoom(data as RoomMeta)
-    })()
+    // Room data is fetched in the combined API call above
+    // Just subscribe to realtime updates
     const channel = supabase.channel(`room-${roomId}-meta`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
         setRoom(payload.new as RoomMeta)
@@ -79,17 +116,19 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
     }
   }, [room?.status, roomId, router])
 
-  useEffect(() => {
-    if (!room || !userId) return
-    if (room.created_by !== userId) return
-    if (room.status && room.status !== 'lobby') return
-    if (!seatsFilled) return
-    if (attemptedStart.current) return
-    attemptedStart.current = true
-    fnAssignRoles(roomId).catch(() => {
-      attemptedStart.current = false
-    })
-  }, [room, userId, seatsFilled, roomId])
+  const isHost = room?.created_by === userId
+
+  async function handleStartGame() {
+    if (!seatsFilled || startingGame) return
+    setStartingGame(true)
+    try {
+      await fnAssignRoles(roomId)
+      // Room status will change to 'talk' and auto-redirect will happen
+    } catch (error) {
+      console.error('Failed to start game:', error)
+      setStartingGame(false)
+    }
+  }
 
   async function handleCopy(value: string, type: 'code' | 'link') {
     try {
@@ -137,7 +176,7 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
                 <div key={slot} className="flex items-center justify-between rounded-2xl border border-border/70 px-4 py-4 bg-white/80">
                   <div>
                     <div className="text-sm font-medium">
-                      {entry ? (entry.display_name || entry.uid.slice(0, 6)) : 'Waiting for player'}
+                      {entry ? (entry.display_name || 'Player') : 'Waiting for player'}
                       {isYou ? <span className="ml-2 text-xs text-[#1F4B3A]">you</span> : null}
                     </div>
                     <div className="text-xs text-muted-foreground mt-1">
@@ -151,8 +190,18 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
               )
             })}
             <div className="text-xs text-muted-foreground">
-              {seatsFilled ? 'Pair locked in. Auto-launching the voice room…' : 'Need help? Drop your friend the full link or code above.'}
+              {seatsFilled ? 'Both players ready!' : 'Need help? Drop your friend the full link or code above.'}
             </div>
+            {isHost && (
+              <Button 
+                onClick={handleStartGame} 
+                disabled={!seatsFilled || startingGame}
+                className="w-full mt-4"
+                size="lg"
+              >
+                {startingGame ? 'Starting...' : seatsFilled ? 'Start Game' : 'Waiting for players...'}
+              </Button>
+            )}
           </CardContent>
         </Card>
 

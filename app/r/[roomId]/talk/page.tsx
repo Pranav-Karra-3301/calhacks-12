@@ -88,14 +88,42 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     return () => { active = false }
   }, [roomId, router])
 
-  // Load participants from database
+  // Load participants and room data from API (bypasses RLS)
   useEffect(() => {
+    if (!userId) return
     let mounted = true
-    ;(async () => {
-      const { data } = await supabase.from('participants').select('uid, display_name, joined_at').eq('room_id', roomId)
-      if (mounted) setParticipants((data ?? []) as Participant[])
-    })()
-    const channel = supabase.channel(`talk-${roomId}-participants`)
+    
+    async function fetchRoomData() {
+      try {
+        const { data: session } = await supabase.auth.getSession()
+        const token = session.session?.access_token
+        
+        const response = await fetch('/api/functions/get-room', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({ roomId }),
+        })
+        
+        if (response.ok) {
+          const data = await response.json()
+          if (mounted) {
+            setParticipants(data.participants as Participant[])
+            if (data.room) setRoom(data.room as RoomInfo)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch room data:', err)
+      }
+    }
+    
+    // Fetch initial data
+    fetchRoomData()
+    
+    // Subscribe to realtime updates for participants
+    const participantsChannel = supabase.channel(`talk-${roomId}-participants`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${roomId}` }, (payload) => {
         setParticipants((prev) => {
           if (payload.eventType === 'INSERT') return [...prev, payload.new as Participant]
@@ -105,27 +133,19 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
         })
       })
       .subscribe()
-    return () => { mounted = false; supabase.removeChannel(channel) }
-  }, [roomId])
-
-  // Load room info
-  useEffect(() => {
-    if (!userId) return
-    let mounted = true
-    ;(async () => {
-      const { data } = await supabase
-        .from('rooms')
-        .select('id, topic, created_by, target_uid, detector_uid, ai_activated_at, started_at, status')
-        .eq('id', roomId)
-        .maybeSingle()
-      if (mounted && data) setRoom(data as RoomInfo)
-    })()
-    const channel = supabase.channel(`talk-${roomId}-meta`)
+    
+    // Subscribe to realtime updates for room
+    const roomChannel = supabase.channel(`talk-${roomId}-meta`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
         setRoom(payload.new as RoomInfo)
       })
       .subscribe()
-    return () => { mounted = false; supabase.removeChannel(channel) }
+    
+    return () => { 
+      mounted = false
+      supabase.removeChannel(participantsChannel)
+      supabase.removeChannel(roomChannel)
+    }
   }, [roomId, userId])
 
   // Load transcripts
@@ -346,10 +366,13 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   }, [])
 
   useEffect(() => {
+    // Only fetch suggestions after LiveKit is connected
+    if (!isConnected) return
+    
     fetchSuggestions()
     const id = setInterval(fetchSuggestions, 10000)
     return () => clearInterval(id)
-  }, [fetchSuggestions])
+  }, [fetchSuggestions, isConnected])
 
   // Helper functions
   const role = (() => {
