@@ -6,11 +6,15 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { VoiceRecorder } from '@/components/elevenlabs/VoiceRecorder'
+import { generateRandomSeed, generateAvatarUrl, type AvatarOptions } from '@/lib/avatar'
+import { AvatarCustomizationModal } from '@/components/AvatarCustomizationModal'
 
 type Profile = {
   id: string
   display_name: string | null
   elevenlabs_voice_id: string | null
+  avatar_seed: string | null
+  avatar_options: AvatarOptions | null
 }
 
 type MetricStats = {
@@ -34,6 +38,8 @@ export default function ProfilePage() {
   const [statsLoading, setStatsLoading] = useState(false)
   const [recentTranscripts, setRecentTranscripts] = useState<{ id: number; text: string; created_at: string; room_id?: string }[]>([])
   const heroName = profile?.display_name || 'Voice Adventurer'
+  const [avatarOptions, setAvatarOptions] = useState<AvatarOptions>({})
+  const [isCustomizationModalOpen, setIsCustomizationModalOpen] = useState(false)
 
   const statCards = useMemo(() => ([
     {
@@ -69,7 +75,12 @@ export default function ProfilePage() {
       const uid = auth.user?.id
       if (!uid) { setLoading(false); return }
       const { data } = await supabase.from('profiles').select('*').eq('id', uid).maybeSingle()
-      if (data) setProfile(data as any)
+      if (data) {
+        setProfile(data as any)
+        if (data.avatar_options) {
+          setAvatarOptions(data.avatar_options as AvatarOptions)
+        }
+      }
       setLoading(false)
     })()
   }, [])
@@ -133,6 +144,30 @@ export default function ProfilePage() {
     return () => { cancelled = true }
   }, [profile?.id])
 
+  async function handleAvatarSave(newSeed: string, newOptions: AvatarOptions) {
+    if (!profile) return
+    
+    const { data: auth } = await supabase.auth.getUser()
+    const uid = auth.user?.id
+    if (!uid) return
+    
+    const { error } = await supabase.from('profiles').upsert({
+      id: uid,
+      avatar_seed: newSeed,
+      avatar_options: newOptions,
+      updated_at: new Date().toISOString(),
+    })
+    
+    if (!error) {
+      setProfile({ ...profile, avatar_seed: newSeed, avatar_options: newOptions })
+      setAvatarOptions(newOptions)
+      setMessage('Avatar saved successfully!')
+      setTimeout(() => setMessage(null), 3000)
+    } else {
+      setMessage('Failed to save avatar')
+    }
+  }
+
   async function save() {
     setMessage(null)
     const { data: auth } = await supabase.auth.getUser()
@@ -142,6 +177,8 @@ export default function ProfilePage() {
       id: uid,
       display_name: profile?.display_name ?? null,
       elevenlabs_voice_id: profile?.elevenlabs_voice_id ?? null,
+      avatar_seed: profile?.avatar_seed ?? null,
+      avatar_options: avatarOptions,
       updated_at: new Date().toISOString(),
     }
     const { error } = await supabase.from('profiles').upsert(upsert)
@@ -213,15 +250,59 @@ export default function ProfilePage() {
 
   return (
     <div className="space-y-10 pb-16">
-      <section className="texture-panel space-y-4">
-        <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Profile HQ</p>
-        <h1 className="heading-font text-4xl sm:text-[44px] leading-tight">Welcome back, {heroName}.</h1>
-        <p className="text-base text-muted-foreground max-w-2xl">
-          Track your wins, monitor your clones, and prep for the next ElevenLabs-powered showdown.
-        </p>
-        <div className="flex flex-wrap gap-3">
-          <Link href="/"><Button variant="outline">← Back home</Button></Link>
-          <Link href="/r/new"><Button variant="secondary">Start a new room</Button></Link>
+      <AvatarCustomizationModal
+        isOpen={isCustomizationModalOpen}
+        onClose={() => setIsCustomizationModalOpen(false)}
+        currentSeed={profile?.avatar_seed || generateRandomSeed()}
+        currentOptions={avatarOptions}
+        onSave={handleAvatarSave}
+      />
+      
+      <section className="texture-panel">
+        <div className="flex flex-col sm:flex-row gap-6 items-start">
+          <div className="flex-1 space-y-4">
+            <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Profile HQ</p>
+            <h1 className="heading-font text-4xl sm:text-[44px] leading-tight">Welcome back, {heroName}.</h1>
+            <p className="text-base text-muted-foreground max-w-2xl">
+              Track your wins, monitor your clones, and prep for the next ElevenLabs-powered showdown.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <Link href="/"><Button variant="outline">← Back home</Button></Link>
+              <Link href="/r/new"><Button variant="secondary">Start a new room</Button></Link>
+            </div>
+          </div>
+          
+          <div className="flex flex-col items-center space-y-3 flex-shrink-0">
+            {profile?.avatar_seed ? (
+              <>
+                <img 
+                  src={generateAvatarUrl(profile.avatar_seed, avatarOptions)} 
+                  alt="Your avatar" 
+                  className="w-28 h-28 sm:w-32 sm:h-32 rounded-2xl border-2 border-border shadow-lg"
+                />
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setIsCustomizationModalOpen(true)}
+                >
+                  Customize
+                </Button>
+              </>
+            ) : (
+              <>
+                <div className="w-28 h-28 sm:w-32 sm:h-32 rounded-2xl border-2 border-dashed border-border bg-muted/50 flex items-center justify-center text-4xl">
+                  👤
+                </div>
+                <Button 
+                  variant="default" 
+                  size="sm"
+                  onClick={() => setIsCustomizationModalOpen(true)}
+                >
+                  Create Avatar
+                </Button>
+              </>
+            )}
+          </div>
         </div>
       </section>
 

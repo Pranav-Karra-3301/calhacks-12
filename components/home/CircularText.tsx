@@ -1,5 +1,11 @@
 'use client'
 
+const headlines = [
+  "Can you tell who's real?",
+  'A social deception game for the age of AI',
+  "The world's first social Turing test",
+]
+
 export function CircularText() {
   return (
     <>
@@ -39,16 +45,19 @@ export function CircularText() {
         </div>
       </div>
 
-      {/* Mobile: Scrolling marquee - behind card */}
-      <div className="md:hidden absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full overflow-hidden pointer-events-none z-0">
-        <div className="relative w-full">
-          <div className="flex animate-scroll whitespace-nowrap">
-            <span className="inline-block px-8 text-lg text-muted-foreground font-heading">Can you tell who's real?</span>
-            <span className="inline-block px-8 text-lg text-muted-foreground font-heading">A social deception game for the age of AI</span>
-            <span className="inline-block px-8 text-lg text-muted-foreground font-heading">The world's first social Turing test</span>
-            <span className="inline-block px-8 text-lg text-muted-foreground font-heading">Can you tell who's real?</span>
-            <span className="inline-block px-8 text-lg text-muted-foreground font-heading">A social deception game for the age of AI</span>
-            <span className="inline-block px-8 text-lg text-muted-foreground font-heading">The world's first social Turing test</span>
+      {/* Mobile: Scrolling ticker pinned to the very top */}
+      <div className="md:hidden fixed top-0 left-0 w-full px-3 pointer-events-none z-30">
+        <div className="relative mx-auto w-full max-w-3xl overflow-hidden rounded-full border border-white/20 bg-background/90 backdrop-blur">
+          <div className="flex w-max animate-scroll whitespace-nowrap py-2 text-xs font-heading uppercase tracking-[0.3em] text-muted-foreground">
+            {[...Array(2)].map((_, idx) => (
+              <div key={idx} className="flex">
+                {headlines.map(headline => (
+                  <span key={`${headline}-${idx}`} className="inline-block px-4">
+                    {headline}
+                  </span>
+                ))}
+              </div>
+            ))}
           </div>
         </div>
       </div>

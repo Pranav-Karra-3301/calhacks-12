@@ -42,8 +42,8 @@ export default function SignUpPage() {
     <div className="relative min-h-screen flex items-center justify-center">
       <LogoHeader />
       <CircularText />
-      <div className="relative z-10 w-full max-w-md px-4">
-        <Card className="w-full">
+      <div className="relative z-10 w-full max-w-xl px-4">
+        <Card className="w-full aspect-square flex flex-col justify-center">
           <CardHeader className="text-lg font-semibold">Create an account</CardHeader>
           <CardContent className="space-y-3">
             <Input placeholder="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
