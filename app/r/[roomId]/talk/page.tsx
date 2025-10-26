@@ -12,8 +12,8 @@ import { supabase, getAccessToken, functionsUrl } from '@/lib/supabase'
 import { fnActivateAI, fnDetectorGuess, fnEndCall, fnMarkIntro } from '@/lib/functions'
 import { publishAudioBlob, setLocalAudioEnabled } from '@/lib/livekit-audio'
 import { DeepgramLiveTranscriber } from '@/lib/deepgram-transcription'
+import { AI_TEXT_MODEL, AI_TTS_MODEL, MODERATOR_VOICE_ID } from '@/lib/ai-config'
 
-const MODERATOR_VOICE_ID = 'kdmDKE6EkgrWrrykO9Qt'
 const AI_MAX_SECONDS = 180
 
 type RoomInfo = {
@@ -83,6 +83,8 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   const aiLoopInterval = useRef<NodeJS.Timeout | null>(null)
   const aiClipWarmRef = useRef<Promise<AiClip> | null>(null)
   const aiActiveRef = useRef(false)
+  const [aiVoiceInfo, setAiVoiceInfo] = useState<{ id: string; name: string | null } | null>(null)
+  const [aiVoiceResolved, setAiVoiceResolved] = useState(false)
   
   // Detector state
   const [detectorResult, setDetectorResult] = useState<string | null>(null)
@@ -237,6 +239,89 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   useEffect(() => {
     transcriptsRef.current = transcripts.slice(-20).map((line) => line.text)
   }, [transcripts])
+
+  useEffect(() => {
+    if (!roomId || !userId) {
+      setAiVoiceInfo(null)
+      setAiVoiceResolved(false)
+      return
+    }
+
+    let cancelled = false
+
+    async function loadVoiceInfo() {
+      try {
+        let voiceId: string | null = null
+
+        const { data: clone } = await supabase
+          .from('clones')
+          .select('voice_id')
+          .eq('room_id', roomId)
+          .eq('uid', userId)
+          .maybeSingle()
+
+        if (clone?.voice_id) {
+          voiceId = clone.voice_id
+        }
+
+        if (!voiceId) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('elevenlabs_voice_id')
+            .eq('id', userId)
+            .maybeSingle()
+          voiceId = profile?.elevenlabs_voice_id ?? null
+        }
+
+        if (!voiceId) {
+          if (!cancelled) {
+            setAiVoiceInfo(null)
+          }
+          return
+        }
+
+        const resp = await fetch(`/api/elevenlabs/voice?voiceId=${encodeURIComponent(voiceId)}`)
+        if (cancelled) return
+
+        if (!resp.ok) {
+          if (!cancelled) setAiVoiceInfo({ id: voiceId, name: null })
+          return
+        }
+
+        const voice = await resp.json()
+        if (!cancelled) setAiVoiceInfo({ id: voiceId, name: voice?.name || voiceId })
+      } catch {
+        // keep previous voice info on failure
+      } finally {
+        if (!cancelled) {
+          setAiVoiceResolved(true)
+        }
+      }
+    }
+
+    setAiVoiceResolved(false)
+    loadVoiceInfo()
+
+    const channel = supabase
+      .channel(`talk-${roomId}-clones-${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'clones', filter: `room_id=eq.${roomId}` },
+        (payload) => {
+          const next = (payload.new as { uid?: string | null }) || null
+          if (next?.uid === userId) {
+            setAiVoiceResolved(false)
+            loadVoiceInfo()
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      cancelled = true
+      supabase.removeChannel(channel)
+    }
+  }, [roomId, userId])
 
   // Set timer
   useEffect(() => {
@@ -561,6 +646,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
   const topic = room?.topic || 'Freestyle banter'
   const isHost = room?.created_by === userId
+  const aiVoiceLabel = aiVoiceInfo?.name || aiVoiceInfo?.id || (aiVoiceResolved ? 'No voice linked' : 'Checking voice…')
 
   // Debug role
   useEffect(() => {
@@ -600,7 +686,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       const resp = await fetch('/api/elevenlabs/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voiceId: MODERATOR_VOICE_ID, text, modelId: 'eleven_turbo_v2_5' })
+        body: JSON.stringify({ voiceId: MODERATOR_VOICE_ID, text, modelId: AI_TTS_MODEL })
       })
       if (!resp.ok) return false
       const blob = await resp.blob()
@@ -724,7 +810,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     const ttsResp = await fetch('/api/elevenlabs/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ voiceId, text, modelId: 'eleven_turbo_v2_5' }),
+      body: JSON.stringify({ voiceId, text, modelId: AI_TTS_MODEL }),
     })
 
     if (!ttsResp.ok) {
@@ -1025,8 +1111,15 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
                       style={{ width: `${Math.min(100, (aiCountdown / AI_MAX_SECONDS) * 100)}%` }} 
                     />
                   </div>
-                  <Button onClick={handleActivateAI} disabled={aiActive || aiBusy || !isConnected} className="w-full">
-                    {aiActive ? 'Persona live' : aiBusy ? 'Warming up…' : 'Let AI persona take over'}
+                  <Button
+                    onClick={handleActivateAI}
+                    disabled={aiActive || aiBusy || !isConnected}
+                    className="w-full flex flex-col items-start gap-0.5"
+                  >
+                    <span>{aiActive ? 'Persona live' : aiBusy ? 'Warming up…' : 'Let AI persona take over'}</span>
+                    <span className="text-[11px] opacity-80">
+                      Model: {AI_TEXT_MODEL} · Voice: {aiVoiceLabel}
+                    </span>
                   </Button>
                 </div>
               )}
