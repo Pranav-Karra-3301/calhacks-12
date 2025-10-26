@@ -61,6 +61,13 @@ export function GameCard() {
             </Button>
           </Link>
         </CardContent>
+        {user && (
+          <CardContent className="flex justify-center pt-0">
+            <Link href={"/solo" as any} className="text-sm text-muted-foreground hover:text-foreground transition-colors underline">
+              Don't have any friends? Play solo here
+            </Link>
+          </CardContent>
+        )}
         <CardContent className="flex flex-col gap-3 items-center">
           {user ? (
             <>

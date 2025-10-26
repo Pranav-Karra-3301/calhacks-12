@@ -1,0 +1,105 @@
+{
+  "samples": [
+    {
+      "id": "sample_001",
+      "text": "The quick brown fox jumps over the lazy dog while the sun sets in the evening sky.",
+      "duration": 5.2
+    },
+    {
+      "id": "sample_002",
+      "text": "In the heart of the city, there lived a young woman who dreamed of becoming a great artist.",
+      "duration": 6.1
+    },
+    {
+      "id": "sample_003",
+      "text": "Technology has transformed the way we communicate, work, and interact with the world around us.",
+      "duration": 7.3
+    },
+    {
+      "id": "sample_004",
+      "text": "The old library stood at the corner of the street, its windows reflecting the morning light.",
+      "duration": 5.8
+    },
+    {
+      "id": "sample_005",
+      "text": "Music filled the air as people gathered in the park to celebrate the festival.",
+      "duration": 5.5
+    },
+    {
+      "id": "sample_006",
+      "text": "She walked along the beach, listening to the waves crash against the shore.",
+      "duration": 5.0
+    },
+    {
+      "id": "sample_007",
+      "text": "The scientist explained her groundbreaking discovery to the eager audience.",
+      "duration": 5.4
+    },
+    {
+      "id": "sample_008",
+      "text": "Children played in the garden while their parents watched from nearby benches.",
+      "duration": 5.6
+    },
+    {
+      "id": "sample_009",
+      "text": "The mountain peak was covered in snow, glistening under the clear blue sky.",
+      "duration": 5.9
+    },
+    {
+      "id": "sample_010",
+      "text": "He opened the book and began reading the first chapter of the adventure story.",
+      "duration": 5.7
+    },
+    {
+      "id": "sample_011",
+      "text": "The coffee shop on the corner was always busy with customers in the morning.",
+      "duration": 5.8
+    },
+    {
+      "id": "sample_012",
+      "text": "She learned to play the piano when she was just seven years old.",
+      "duration": 5.2
+    },
+    {
+      "id": "sample_013",
+      "text": "The train departed from the station exactly on time as scheduled.",
+      "duration": 5.0
+    },
+    {
+      "id": "sample_014",
+      "text": "Artificial intelligence is reshaping industries and creating new opportunities for innovation.",
+      "duration": 6.8
+    },
+    {
+      "id": "sample_015",
+      "text": "The chef prepared a delicious meal using fresh ingredients from the local market.",
+      "duration": 6.2
+    },
+    {
+      "id": "sample_016",
+      "text": "Stars filled the night sky as they sat around the campfire telling stories.",
+      "duration": 5.9
+    },
+    {
+      "id": "sample_017",
+      "text": "The museum displayed artifacts from ancient civilizations across multiple continents.",
+      "duration": 6.5
+    },
+    {
+      "id": "sample_018",
+      "text": "She practiced yoga every morning to maintain her physical and mental health.",
+      "duration": 5.8
+    },
+    {
+      "id": "sample_019",
+      "text": "The storm approached rapidly, bringing heavy rain and strong winds.",
+      "duration": 5.3
+    },
+    {
+      "id": "sample_020",
+      "text": "He worked diligently on his research paper throughout the entire semester.",
+      "duration": 5.6
+    }
+  ]
+}
+
