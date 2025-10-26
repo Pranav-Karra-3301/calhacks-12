@@ -5,18 +5,16 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
 import { fnAssignRoles, fnJoinRoom } from '@/lib/functions'
-import { generateAvatarUrl } from '@/lib/avatar'
+import { generateAvatarUrl, type AvatarOptions } from '@/lib/avatar'
 import { QRCodeSVG } from 'qrcode.react'
 
 type Participant = { uid: string; display_name: string | null; joined_at: string; role: string | null }
 type RoomMeta = { id: string; code: string | null; created_by: string | null; status: string | null }
-type ParticipantAvatar = { uid: string; avatar_seed: string | null }
-
 export default function RoomLobby({ params }: { params: { roomId: string } }) {
   const roomId = params.roomId
   const router = useRouter()
   const [participants, setParticipants] = useState<Participant[]>([])
-  const [participantAvatars, setParticipantAvatars] = useState<Map<string, string>>(new Map())
+  const [participantAvatars, setParticipantAvatars] = useState<Map<string, { seed: string | null; options: AvatarOptions | null }>>(new Map())
   const [room, setRoom] = useState<RoomMeta | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [isGuest, setIsGuest] = useState(false)
@@ -133,13 +131,14 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
     ;(async () => {
       if (participants.length === 0) return
       const uids = participants.map(p => p.uid)
-      const { data } = await supabase.from('profiles').select('id, avatar_seed').in('id', uids)
+      const { data } = await supabase.from('profiles').select('id, avatar_seed, avatar_options').in('id', uids)
       if (mounted && data) {
-        const avatarMap = new Map<string, string>()
+        const avatarMap = new Map<string, { seed: string | null; options: AvatarOptions | null }>()
         data.forEach((profile: any) => {
-          if (profile.avatar_seed) {
-            avatarMap.set(profile.id, profile.avatar_seed)
-          }
+          avatarMap.set(profile.id, {
+            seed: profile.avatar_seed ?? null,
+            options: profile.avatar_options ?? null,
+          })
         })
         setParticipantAvatars(avatarMap)
       }
@@ -257,12 +256,14 @@ export default function RoomLobby({ params }: { params: { roomId: string } }) {
             {[0, 1].map((slot) => {
               const entry = participants[slot]
               const isYou = entry && entry.uid === userId
-              const avatarSeed = entry ? participantAvatars.get(entry.uid) : null
+              const avatarProfile = entry ? participantAvatars.get(entry.uid) : null
+              const resolvedSeed = entry ? (avatarProfile?.seed ?? entry.uid) : null
+              const resolvedOptions = avatarProfile?.options ?? undefined
               return (
                 <div key={slot} className="flex items-center gap-3 rounded-2xl border border-border/70 px-4 py-4 bg-white/80">
-                  {avatarSeed ? (
+                  {entry ? (
                     <img 
-                      src={generateAvatarUrl(avatarSeed)} 
+                      src={generateAvatarUrl(resolvedSeed || entry.uid, resolvedOptions)} 
                       alt={entry?.display_name || 'Player avatar'} 
                       className="w-12 h-12 rounded-xl border border-border/70 flex-shrink-0"
                     />

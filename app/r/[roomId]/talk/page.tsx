@@ -32,6 +32,7 @@ type RoomInfo = {
 type Participant = { uid: string; display_name: string | null; joined_at: string }
 type TranscriptLine = { id: number; text: string; uid: string | null; created_at: string; speaker_id?: number | null }
 type AiClip = { text: string; audioBlob: Blob }
+type PlayerRole = 'target' | 'detector' | 'host' | 'guest' | null
 
 export default function TalkPage({ params }: { params: { roomId: string } }) {
   const roomId = params.roomId
@@ -108,9 +109,8 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     })
   }, [])
   
-  const requestRoomEnd = useCallback(async (reason: string, leaver?: string | null, redirect = false) => {
+  const requestRoomEnd = useCallback(async (reason: string, leaver?: string | null) => {
     if (roomEndRequestedRef.current) {
-      if (redirect) router.push('/')
       return
     }
     roomEndRequestedRef.current = true
@@ -119,12 +119,8 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     } catch (error) {
       console.error('Failed to end room:', error)
       roomEndRequestedRef.current = false
-    } finally {
-      if (redirect) {
-        router.push('/')
-      }
     }
-  }, [roomId, router])
+  }, [roomId])
   
   // Get user auth
   useEffect(() => {
@@ -636,7 +632,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   }, [fetchSuggestions, isConnected])
 
   // Helper functions
-  const role = (() => {
+  const role: PlayerRole = (() => {
     if (!room || !userId) return null
     if (room.target_uid === userId) return 'target'
     if (room.detector_uid === userId) return 'detector'
@@ -672,13 +668,122 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       livekitRoom.current.disconnect()
       livekitRoom.current = null
     }
-    await requestRoomEnd('self-ended', userId, true)
+    await requestRoomEnd('self-ended', userId)
   }
 
   function formatSeconds(sec: number) {
     const mm = Math.floor(sec / 60)
     const ss = (sec % 60).toString().padStart(2, '0')
     return `${mm}:${ss}`
+  }
+
+  type EndScreenCopy = {
+    badge: string
+    title: string
+    subtitle: string
+    details: string[]
+    emoji: string
+    tone: 'success' | 'warning' | 'danger' | 'neutral'
+  }
+
+  function getEndScreenCopy(result: RoomInfo['result'] | null | undefined, playerRole: PlayerRole): EndScreenCopy {
+    const base: EndScreenCopy = {
+      badge: 'Call closed',
+      title: 'Call ended',
+      subtitle: 'Session ended early. Hop back to the lobby to run it again.',
+      details: [
+        'LiveKit disconnected for everyone.',
+        'Spin up a fresh room any time.',
+      ],
+      emoji: '👋',
+      tone: 'neutral',
+    }
+
+    if (result === 'detector_win') {
+      if (playerRole === 'detector') {
+        return {
+          badge: 'AI got caught',
+          title: 'You caught the AI!',
+          subtitle: 'Your call landed before the persona could finish the bluff.',
+          details: [
+            'Persona audio is muted for everyone.',
+            'Host can start a rematch whenever you are ready.',
+          ],
+          emoji: '🎯',
+          tone: 'success',
+        }
+      }
+
+      if (playerRole === 'target') {
+        return {
+          badge: 'AI got caught',
+          title: 'AI got caught',
+          subtitle: 'Detector spotted the takeover before the timer ran out.',
+          details: [
+            'Try remixing your prompt or cadence for the next round.',
+            'Jump back to the lobby when you are ready.',
+          ],
+          emoji: '🕵️',
+          tone: 'danger',
+        }
+      }
+
+      return {
+        badge: 'AI got caught',
+        title: 'AI got caught',
+        subtitle: 'The detector called it in time and shut down the persona.',
+        details: [
+          'Scores are locked. Queue up another match when ready.',
+          'Share the recap with your crew.',
+        ],
+        emoji: '🛑',
+        tone: 'success',
+      }
+    }
+
+    if (result === 'target_win') {
+      if (playerRole === 'target') {
+        return {
+          badge: 'AI fooled your friend',
+          title: 'The AI fooled your friend',
+          subtitle: 'You kept the persona sounding human until the buzzer.',
+          details: [
+            'Detector is out of guesses.',
+            'Run it back or celebrate the win in the lobby.',
+          ],
+          emoji: '🤖',
+          tone: 'success',
+        }
+      }
+
+      if (playerRole === 'detector') {
+        return {
+          badge: 'AI persona win',
+          title: "You didn't catch the AI",
+          subtitle: 'The persona stayed undercover long enough to win this round.',
+          details: [
+            'Watch for the subtle tells next time.',
+            'Ask for another round to redeem yourself.',
+          ],
+          emoji: '🙈',
+          tone: 'warning',
+        }
+      }
+
+      return {
+        badge: 'AI fooled the room',
+        title: 'AI fooled the room',
+        subtitle: 'The persona survived the window without being detected.',
+        details: [
+          'Host can spin up a rematch right away.',
+          'Keep transcripts handy for a post-game review.',
+        ],
+        emoji: '🌀',
+        tone: 'success',
+      }
+    }
+
+    return base
   }
 
   async function speakModerator(text: string) {
@@ -925,17 +1030,41 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   }
 
   if (room.status === 'ended') {
-    const summary =
-      room.result === 'detector_win'
-        ? 'Detector called it in time. Game over!'
-        : room.result === 'target_win'
-        ? 'Target survived this round. Detector either bailed or guessed wrong.'
-        : 'Call ended early. Feel free to start a new round.'
+    const endCopy = getEndScreenCopy(room.result, role)
+    const toneStyles = {
+      success: { badge: 'bg-[#1F4B3A]/15 text-[#1F4B3A]', icon: 'bg-[#1F4B3A]/10 text-[#1F4B3A]' },
+      warning: { badge: 'bg-[#D97706]/15 text-[#9A5B00]', icon: 'bg-[#D97706]/10 text-[#9A5B00]' },
+      danger: { badge: 'bg-[#B92B27]/15 text-[#B92B27]', icon: 'bg-[#B92B27]/10 text-[#B92B27]' },
+      neutral: { badge: 'bg-[#475467]/10 text-[#475467]', icon: 'bg-[#475467]/10 text-[#475467]' },
+    } as const
+    const appliedTone = toneStyles[endCopy.tone]
+
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-center">
-        <div className="heading-font text-3xl">Call ended</div>
-        <p className="text-muted-foreground max-w-md">{summary}</p>
-        <Button onClick={() => router.push('/')}>Return home</Button>
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-[#F3EFE8] to-[#E7E0D6] px-4 py-10">
+        <div className="w-full max-w-xl rounded-[32px] border border-border/80 bg-white/90 p-8 text-center space-y-6 shadow-lg">
+          <div className={`inline-flex items-center justify-center rounded-full px-3 py-1 text-xs uppercase tracking-[0.3em] ${appliedTone.badge}`}>
+            {endCopy.badge}
+          </div>
+          <div className="heading-font text-4xl sm:text-5xl">{endCopy.title}</div>
+          <p className="text-base text-muted-foreground">{endCopy.subtitle}</p>
+          <div className={`mx-auto flex h-16 w-16 items-center justify-center rounded-2xl text-3xl ${appliedTone.icon}`}>
+            {endCopy.emoji}
+          </div>
+          <ul className="mx-auto max-w-md space-y-1 text-left text-sm text-muted-foreground">
+            {endCopy.details.map((detail) => (
+              <li key={detail} className="flex items-start gap-2">
+                <span className="text-xs text-[#B6ADA6] mt-0.5">•</span>
+                <span>{detail}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Button onClick={() => router.push('/')}>Return home</Button>
+            <Button variant="outline" onClick={() => router.push('/r/new')}>
+              Start new room
+            </Button>
+          </div>
+        </div>
       </div>
     )
   }
