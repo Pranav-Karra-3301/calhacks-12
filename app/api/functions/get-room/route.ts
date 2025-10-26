@@ -42,7 +42,7 @@ export async function POST(request: Request) {
     // Fetch room details
     const { data: room, error: roomErr } = await serviceClient
       .from('rooms')
-      .select('id, code, created_by, status')
+      .select('id, code, created_by, status, topic, target_uid, detector_uid, ai_activated_at, started_at, result')
       .eq('id', roomId)
       .maybeSingle()
 
@@ -73,4 +73,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error?.message || 'Failed to get room data' }, { status: 500 })
   }
 }
-

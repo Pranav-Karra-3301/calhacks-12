@@ -13,7 +13,7 @@ async function blobToAudioBuffer(blob: Blob): Promise<AudioBuffer> {
  * Publish audio blob to LiveKit room as a new audio track
  * This is used for moderator voice and AI persona audio
  */
-export async function publishAudioBlob(room: Room, audioBlob: Blob, trackName: string = 'audio'): Promise<void> {
+export async function publishAudioBlob(room: Room, audioBlob: Blob, trackName: string = 'audio'): Promise<number> {
   try {
     const audioBuffer = await blobToAudioBuffer(audioBlob)
     const audioContext = new AudioContext()
@@ -44,6 +44,8 @@ export async function publishAudioBlob(room: Room, audioBlob: Blob, trackName: s
         console.error('Error cleaning up audio track:', e)
       }
     }, (audioBuffer.duration * 1000) + 500)
+
+    return audioBuffer.duration
   } catch (error) {
     console.error('Error publishing audio blob:', error)
     throw error
@@ -122,4 +124,3 @@ export async function replaceLocalAudioTrack(room: Room, newStream: MediaStream)
     return null
   }
 }
-

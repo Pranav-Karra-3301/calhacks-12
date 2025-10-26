@@ -10,6 +10,7 @@ interface ScrollingWaveformProps {
   barColor?: string
   speed?: number
   className?: string
+  level?: number
 }
 
 export function ScrollingWaveform({
@@ -21,20 +22,30 @@ export function ScrollingWaveform({
   barColor = '#1F4B3A',
   speed = 50,
   className = '',
+  level,
 }: ScrollingWaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animationRef = useRef<number>()
   const timeRef = useRef<number>(0)
   const barsRef = useRef<number[]>([])
+  const currentLevelRef = useRef(0)
+  const targetLevelRef = useRef(0)
+
+  const useLevelInput = typeof level === 'number'
+
+  useEffect(() => {
+    targetLevelRef.current = Math.max(0, Math.min(1, level ?? 0))
+  }, [level])
 
   useEffect(() => {
     // Initialize bars with random heights
-    if (barsRef.current.length === 0) {
+    if (barsRef.current.length !== barCount) {
       barsRef.current = Array.from({ length: barCount }, () => 0.2 + Math.random() * 0.6)
     }
 
     if (!active) {
       cleanup()
+      currentLevelRef.current = targetLevelRef.current
       drawStatic()
       return
     }
@@ -42,7 +53,7 @@ export function ScrollingWaveform({
     animate()
 
     return cleanup
-  }, [active, barCount])
+  }, [active, barCount, useLevelInput])
 
   function animate() {
     if (!canvasRef.current) return
@@ -63,12 +74,25 @@ export function ScrollingWaveform({
     const startX = (canvas.width - barCount * totalBarWidth + barGap) / 2
 
     // Update and draw bars with scrolling effect
+    const usesLevel = useLevelInput
+    if (usesLevel) {
+      const diff = targetLevelRef.current - currentLevelRef.current
+      currentLevelRef.current += diff * 0.2
+    }
+    const smoothedLevel = currentLevelRef.current
+
     for (let i = 0; i < barCount; i++) {
-      // Create smooth wave animation
-      const waveOffset = Math.sin(timeRef.current + i * 0.3) * 0.3
-      const targetHeight = barsRef.current[i] + waveOffset
-      const normalizedHeight = Math.max(0.1, Math.min(1, targetHeight))
-      
+      let normalizedHeight: number
+      if (usesLevel) {
+        const seed = barsRef.current[i]
+        const variance = 0.4 + seed * 0.6
+        normalizedHeight = Math.max(0.08, Math.min(1, smoothedLevel * variance))
+      } else {
+        const waveOffset = Math.sin(timeRef.current + i * 0.3) * 0.3
+        const targetHeight = barsRef.current[i] + waveOffset
+        normalizedHeight = Math.max(0.1, Math.min(1, targetHeight))
+      }
+
       const barHeight = Math.max(4, normalizedHeight * canvas.height * 0.7)
 
       const x = startX + i * totalBarWidth
@@ -100,8 +124,10 @@ export function ScrollingWaveform({
     const startX = (canvas.width - barCount * totalBarWidth + barGap) / 2
 
     // Draw static bars with the current heights
+    const idleLevel = useLevelInput ? Math.max(0.05, targetLevelRef.current * 0.5) : 0.1
+
     for (let i = 0; i < barCount; i++) {
-      const barHeight = 4
+      const barHeight = Math.max(4, idleLevel * canvas.height * 0.3)
 
       const x = startX + i * totalBarWidth
       const y = (canvas.height - barHeight) / 2
@@ -128,4 +154,3 @@ export function ScrollingWaveform({
     />
   )
 }
-

@@ -45,7 +45,7 @@ export async function POST(request: Request) {
     // Get room details and check user is the target
     const { data: room } = await supabase
       .from('rooms')
-      .select('target_uid, topic')
+      .select('target_uid, detector_uid, topic')
       .eq('id', roomId)
       .maybeSingle()
 
@@ -53,9 +53,40 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Only the target can use AI persona' }, { status: 403 })
     }
 
-    // Build conversation context
-    const transcriptText = Array.isArray(recentTranscripts) && recentTranscripts.length > 0
-      ? recentTranscripts.join('\n')
+    // Build conversation context from recent transcripts + persisted history
+    const contextLines: string[] = []
+
+    if (Array.isArray(recentTranscripts)) {
+      for (const line of recentTranscripts) {
+        if (typeof line === 'string' && line.trim().length > 0) {
+          contextLines.push(line.trim())
+        }
+      }
+    }
+
+    const { data: storedTranscripts } = await supabase
+      .from('transcripts')
+      .select('text, uid, created_at')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: false })
+      .limit(25)
+
+    if (storedTranscripts) {
+      storedTranscripts.reverse().forEach((row) => {
+        if (!row.text) return
+        const speaker =
+          row.uid === room.target_uid
+            ? 'Target'
+            : row.uid === room.detector_uid
+            ? 'Detector'
+            : 'Moderator'
+        contextLines.push(`${speaker}: ${row.text}`)
+      })
+    }
+
+    const uniqueContext = Array.from(new Set(contextLines))
+    const transcriptText = uniqueContext.length > 0
+      ? uniqueContext.slice(-30).join('\n')
       : 'No conversation yet.'
 
     const topic = room.topic || 'general conversation'
@@ -74,7 +105,7 @@ export async function POST(request: Request) {
         messages: [
           {
             role: 'system',
-            content: `You are having a natural conversation with a friend about "${topic}". Keep responses conversational, authentic, and brief (1-3 sentences). Match the tone of the conversation. Avoid sounding robotic or overly formal. You're trying to blend in as a human.`,
+            content: `You are seamlessly impersonating the host in a fast-paced guessing game about "${topic}". Continue the story with confident, natural replies (1-3 sentences), reference prior details when possible, and never mention that you're an AI. The detector wins if they suspect you, so keep it casual and human.`,
           },
           {
             role: 'user',
@@ -115,4 +146,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error?.message || 'Unexpected error' }, { status: 500 })
   }
 }
-
