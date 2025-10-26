@@ -57,9 +57,17 @@ export async function fnDetectorGuess(roomId: string) {
   return data as { correct: boolean }
 }
 
+export async function fnEndCall(roomId: string, options?: { reason?: string; leaverUid?: string | null }) {
+  const data = await callApi('/api/functions/end-call', {
+    roomId,
+    reason: options?.reason ?? null,
+    leaverUid: options?.leaverUid ?? null,
+  })
+  return data as { ok: boolean; result?: string | null }
+}
+
 export async function fnEndRoomIfTimeout(roomId: string) {
   const { data, error } = await supabase.functions.invoke("end-room-if-timeout", { body: { roomId } })
   if (error) throw error
   return data as { ended: boolean }
 }
-

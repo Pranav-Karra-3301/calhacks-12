@@ -9,7 +9,7 @@ import { Timer } from '@/components/Timer'
 import { MicSelector } from '@/components/ui/mic-selector'
 import { ScrollingWaveform } from '@/components/ui/waveform'
 import { supabase, getAccessToken, functionsUrl } from '@/lib/supabase'
-import { fnActivateAI, fnDetectorGuess } from '@/lib/functions'
+import { fnActivateAI, fnDetectorGuess, fnEndCall } from '@/lib/functions'
 import { publishAudioBlob, setLocalAudioEnabled } from '@/lib/livekit-audio'
 import { DeepgramLiveTranscriber } from '@/lib/deepgram-transcription'
 
@@ -25,10 +25,12 @@ type RoomInfo = {
   ai_activated_at: string | null
   started_at: string | null
   status: string | null
+  result?: string | null
 }
 
 type Participant = { uid: string; display_name: string | null; joined_at: string }
 type TranscriptLine = { id: number; text: string; uid: string | null; created_at: string; speaker_id?: number | null }
+type AiClip = { text: string; audioBlob: Blob }
 
 export default function TalkPage({ params }: { params: { roomId: string } }) {
   const roomId = params.roomId
@@ -38,12 +40,16 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   const [userId, setUserId] = useState<string | null>(null)
   const [room, setRoom] = useState<RoomInfo | null>(null)
   const [participants, setParticipants] = useState<Participant[]>([])
+  const participantsRef = useRef<Participant[]>([])
   
   // LiveKit state
   const livekitRoom = useRef<Room | null>(null)
+  const roomEndRequestedRef = useRef(false)
   const [isConnected, setIsConnected] = useState(false)
   const [remoteParticipants, setRemoteParticipants] = useState<string[]>([])
   const [isSpeaking, setIsSpeaking] = useState<Record<string, boolean>>({})
+  const [audioLevels, setAudioLevels] = useState<Record<string, number>>({})
+  const [participantMuteMap, setParticipantMuteMap] = useState<Record<string, boolean>>({})
   
   // Transcript state
   const [transcripts, setTranscripts] = useState<TranscriptLine[]>([])
@@ -64,6 +70,8 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   const aiAnnounced = useRef(false)
   const [aiBusy, setAiBusy] = useState(false)
   const aiLoopInterval = useRef<NodeJS.Timeout | null>(null)
+  const aiClipWarmRef = useRef<Promise<AiClip> | null>(null)
+  const aiActiveRef = useRef(false)
   
   // Detector state
   const [detectorResult, setDetectorResult] = useState<string | null>(null)
@@ -77,7 +85,15 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   
   // Mic controls
   const [selectedMic, setSelectedMic] = useState('')
-  const [isMicMuted, setIsMicMuted] = useState(false)
+  const [isMicMuted, setIsMicMuted] = useState(true)
+  
+  const updateParticipantMute = useCallback((uid: string | undefined, muted: boolean) => {
+    if (!uid) return
+    setParticipantMuteMap((prev) => {
+      if (prev[uid] === muted) return prev
+      return { ...prev, [uid]: muted }
+    })
+  }, [])
 
   // Get user auth
   useEffect(() => {
@@ -153,6 +169,20 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       supabase.removeChannel(roomChannel)
     }
   }, [roomId, userId])
+  
+  // Keep refs/maps in sync with participant list
+  useEffect(() => {
+    participantsRef.current = participants
+    setParticipantMuteMap((prev) => {
+      const next = { ...prev }
+      participants.forEach(({ uid }) => {
+        if (!(uid in next)) {
+          next[uid] = true
+        }
+      })
+      return next
+    })
+  }, [participants])
 
   // Load transcripts
   useEffect(() => {
@@ -176,7 +206,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
   // Update transcript ref
   useEffect(() => {
-    transcriptsRef.current = transcripts.slice(-12).map((line) => line.text)
+    transcriptsRef.current = transcripts.slice(-20).map((line) => line.text)
   }, [transcripts])
 
   // Set timer
@@ -209,6 +239,21 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   
   // Calculate aiActive
   const aiActive = !!room?.ai_activated_at && !aiFinished
+  useEffect(() => {
+    aiActiveRef.current = aiActive
+    if (!aiActive) {
+      stopAILoop()
+    }
+  }, [aiActive])
+
+  useEffect(() => {
+    if (room?.status === 'ended' && livekitRoom.current) {
+      livekitRoom.current.disconnect()
+      livekitRoom.current = null
+      setIsConnected(false)
+      stopAILoop()
+    }
+  }, [room?.status])
 
   // Connect to LiveKit room
   useEffect(() => {
@@ -241,8 +286,9 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
         if (mounted) {
           setIsConnected(true)
           
-          // Enable local microphone
-          await lkRoom.localParticipant.setMicrophoneEnabled(true)
+          // Start everyone muted until moderator intro completes
+          await lkRoom.localParticipant.setMicrophoneEnabled(false)
+          updateParticipantMute(userId, true)
         }
       } catch (error) {
         console.error('LiveKit connection error:', error)
@@ -256,6 +302,9 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
     lkRoom.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
       setRemoteParticipants((prev) => prev.filter((id) => id !== participant.identity))
+      if (participant.identity && participant.identity !== userId) {
+        requestRoomEnd('peer-left', participant.identity)
+      }
     })
 
     // Handle audio tracks
@@ -272,12 +321,36 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     })
 
     // Handle speaking indicators
+    lkRoom.on(RoomEvent.TrackMuted, (_publication, participant) => {
+      updateParticipantMute(participant?.identity, true)
+    })
+
+    lkRoom.on(RoomEvent.TrackUnmuted, (_publication, participant) => {
+      updateParticipantMute(participant?.identity, false)
+    })
+
     lkRoom.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
       const speakingMap: Record<string, boolean> = {}
       speakers.forEach((speaker) => {
         speakingMap[speaker.identity] = true
       })
       setIsSpeaking(speakingMap)
+      setAudioLevels((prev) => {
+        const next: Record<string, number> = {}
+        const ids = new Set<string>([
+          ...Object.keys(prev),
+          ...participantsRef.current.map((p) => p.uid),
+        ])
+        if (userId) ids.add(userId)
+        ids.forEach((id) => {
+          next[id] = Math.max(0, (prev[id] ?? 0) * 0.35)
+        })
+        speakers.forEach((speaker) => {
+          const level = typeof speaker.audioLevel === 'number' ? speaker.audioLevel : 0.9
+          next[speaker.identity] = Math.max(next[speaker.identity] ?? 0, level)
+        })
+        return next
+      })
     })
 
     connect()
@@ -288,13 +361,18 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       livekitRoom.current = null
       setIsConnected(false)
     }
-  }, [userId, roomId])
+  }, [userId, roomId, updateParticipantMute, requestRoomEnd])
 
   // Handle mute/unmute
   useEffect(() => {
     if (!livekitRoom.current || !isConnected) return
     setLocalAudioEnabled(livekitRoom.current, !isMicMuted)
   }, [isMicMuted, isConnected])
+  
+  useEffect(() => {
+    if (!userId) return
+    updateParticipantMute(userId, isMicMuted)
+  }, [isMicMuted, userId, updateParticipantMute])
 
   // Start Deepgram live transcription - TRUE real-time streaming!
   useEffect(() => {
@@ -324,21 +402,36 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
             // Save to Supabase
             try {
-              const { error } = await supabase
+              const basePayload = {
+                room_id: roomId,
+                uid: userId,
+                text: data.transcript,
+                // Add timing data from first and last word
+                start_ms: data.words && data.words.length > 0
+                  ? Math.floor(data.words[0].start * 1000)
+                  : null,
+                end_ms: data.words && data.words.length > 0
+                  ? Math.floor(data.words[data.words.length - 1].end * 1000)
+                  : null,
+              } as const
+
+              const payloadWithSpeaker = {
+                ...basePayload,
+                speaker_id: typeof data.speaker === 'number' ? data.speaker : null,
+              }
+
+              let { error } = await supabase
                 .from('transcripts')
-                .insert({
-                  room_id: roomId,
-                  uid: userId,
-                  text: data.transcript,
-                  speaker_id: data.speaker,
-                  // Add timing data from first and last word
-                  start_ms: data.words && data.words.length > 0
-                    ? Math.floor(data.words[0].start * 1000)
-                    : null,
-                  end_ms: data.words && data.words.length > 0
-                    ? Math.floor(data.words[data.words.length - 1].end * 1000)
-                    : null,
-                })
+                .insert(payloadWithSpeaker)
+
+              // Some environments may not have the speaker_id column yet.
+              if (error && (error.code === '42703' || /speaker_id/i.test(error.message || ''))) {
+                console.warn('[Deepgram] speaker_id column missing, retrying without diarization column')
+                const { error: fallbackError } = await supabase
+                  .from('transcripts')
+                  .insert(basePayload)
+                error = fallbackError
+              }
 
               if (error) {
                 console.error('[Deepgram] Failed to save transcript:', error)
@@ -374,8 +467,9 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   // Play intro when room loads
   useEffect(() => {
     if (!room || introPlayed || !isConnected) return
+    if (participants.length < 2) return
     playModeratorIntro()
-  }, [room, introPlayed, isConnected])
+  }, [room, introPlayed, isConnected, participants.length])
 
   // Announce AI timeout
   useEffect(() => {
@@ -446,6 +540,32 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     return participants.find((p) => p.uid === uid)?.display_name || 'Player'
   }
 
+  const requestRoomEnd = useCallback(async (reason: string, leaver?: string | null, redirect = false) => {
+    if (roomEndRequestedRef.current) {
+      if (redirect) router.push('/')
+      return
+    }
+    roomEndRequestedRef.current = true
+    try {
+      await fnEndCall(roomId, { reason, leaverUid: leaver ?? null })
+    } catch (error) {
+      console.error('Failed to end room:', error)
+      roomEndRequestedRef.current = false
+    } finally {
+      if (redirect) {
+        router.push('/')
+      }
+    }
+  }, [roomId, router])
+
+  async function handleEndCall() {
+    if (livekitRoom.current) {
+      livekitRoom.current.disconnect()
+      livekitRoom.current = null
+    }
+    await requestRoomEnd('self-ended', userId, true)
+  }
+
   function formatSeconds(sec: number) {
     const mm = Math.floor(sec / 60)
     const ss = (sec % 60).toString().padStart(2, '0')
@@ -481,13 +601,23 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
   async function playModeratorIntro(manual = false) {
     if (!room) return
-    const hostName = nameFor(room.created_by)
-    const script = `Hey ${hostName}! I am your ElevenLabs moderator. Chat naturally, the host can unleash their AI persona anytime for up to three minutes, and the detector gets one confident guess. Ask me anything if you need help.`
-    const ok = await playModeratorLine(script)
-    if (ok) setIntroPlayed(true)
-    else if (!manual) {
-      setModeratorMessages((prev) => [...prev, { id: crypto.randomUUID(), text: 'Tap the Replay Intro button so I can give the rundown.' }])
+    const hostName = nameFor(room.target_uid ?? room.created_by)
+    const detectorName = room.detector_uid ? nameFor(room.detector_uid) : 'the detector'
+    const lines = [
+      `Hey ${hostName} and ${detectorName}! Welcome to Mimicry—the game where the host can swap themself out for a voice-cloned imposter mid-call and the detector has to report it before the timer burns out. Chat naturally, but remember someone is going to flip that switch.`,
+      `You'll hear from me if you need hints or rules. Alright, I'm unmuting you both now—if you need inspiration, peek at the suggested topics on the right. Have fun!`,
+    ]
+    for (const line of lines) {
+      const ok = await playModeratorLine(line)
+      if (!ok) {
+        if (!manual) {
+          setModeratorMessages((prev) => [...prev, { id: crypto.randomUUID(), text: 'Tap the Replay Intro button so I can give the rundown.' }])
+        }
+        return
+      }
     }
+    setIntroPlayed(true)
+    setIsMicMuted(false)
   }
 
   async function handleAskModerator() {
@@ -510,84 +640,103 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     }
   }
 
-  async function generateAndSpeakAI() {
-    if (!livekitRoom.current || !isConnected || aiFinished) return
+  async function fetchAiPersonaClip(): Promise<AiClip> {
+    const token = await getAccessToken()
+    const resp = await fetch('/api/ai-persona', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': token ? `Bearer ${token}` : '',
+      },
+      body: JSON.stringify({
+        roomId,
+        recentTranscripts: transcriptsRef.current,
+      }),
+    })
+
+    if (!resp.ok) {
+      throw new Error('AI persona generation failed')
+    }
+
+    const { text, voiceId } = await resp.json()
+    if (!text) {
+      throw new Error('Empty AI response')
+    }
+
+    const ttsResp = await fetch('/api/elevenlabs/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voiceId, text, modelId: 'eleven_turbo_v2_5' }),
+    })
+
+    if (!ttsResp.ok) {
+      throw new Error('TTS failed')
+    }
+
+    const audioBlob = await ttsResp.blob()
+    return { text, audioBlob }
+  }
+
+  function warmAiPersonaClip() {
+    if (!aiClipWarmRef.current) {
+      aiClipWarmRef.current = fetchAiPersonaClip().catch((error) => {
+        console.error('AI persona warmup failed:', error)
+        aiClipWarmRef.current = null
+        throw error
+      })
+    }
+    return aiClipWarmRef.current
+  }
+
+  async function playAiTurn() {
+    if (!livekitRoom.current || !isConnected || !aiActiveRef.current) return
 
     try {
-      const token = await getAccessToken()
-      
-      // Generate AI response
-      const resp = await fetch('/api/ai-persona', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': token ? `Bearer ${token}` : '',
-        },
-        body: JSON.stringify({
-          roomId,
-          recentTranscripts: transcriptsRef.current,
-        }),
-      })
+      const clipPromise = aiClipWarmRef.current ?? warmAiPersonaClip()
+      const clip = await clipPromise
+      aiClipWarmRef.current = null
 
-      if (!resp.ok) {
-        console.error('AI persona generation failed')
-        return
+      const playbackDuration = await publishAudioBlob(livekitRoom.current, clip.audioBlob, 'ai-persona')
+
+      if (userId) {
+        await supabase.from('transcripts').insert({
+          room_id: roomId,
+          uid: userId,
+          text: clip.text,
+          created_at: new Date().toISOString(),
+        })
       }
 
-      const { text, voiceId } = await resp.json()
-
-      // Convert to speech
-      const ttsResp = await fetch('/api/elevenlabs/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voiceId, text, modelId: 'eleven_turbo_v2_5' })
-      })
-
-      if (!ttsResp.ok) {
-        console.error('TTS failed')
-        return
+      if (aiActiveRef.current) {
+        warmAiPersonaClip()
+        aiLoopInterval.current = setTimeout(() => {
+          playAiTurn()
+        }, Math.max(900, playbackDuration * 1000 * 0.35))
       }
-
-      const audioBlob = await ttsResp.blob()
-
-      // Publish as host's audio
-      if (livekitRoom.current && isConnected) {
-        await publishAudioBlob(livekitRoom.current, audioBlob, 'ai-persona')
-      }
-
-      // Insert into transcript
-      await supabase.from('transcripts').insert({
-        room_id: roomId,
-        uid: userId,
-        text,
-        created_at: new Date().toISOString(),
-      })
     } catch (error) {
       console.error('AI generation error:', error)
+      aiClipWarmRef.current = null
+      if (aiActiveRef.current) {
+        aiLoopInterval.current = setTimeout(() => {
+          warmAiPersonaClip()
+          playAiTurn()
+        }, 1500)
+      }
     }
   }
 
   function startAILoop() {
     if (aiLoopInterval.current) return
-    
-    // Generate first response immediately
-    generateAndSpeakAI()
-    
-    // Then generate new responses every 8-12 seconds
-    aiLoopInterval.current = setInterval(() => {
-      if (aiFinished) {
-        stopAILoop()
-        return
-      }
-      generateAndSpeakAI()
-    }, 10000)
+    warmAiPersonaClip()
+    playAiTurn()
   }
 
   function stopAILoop() {
     if (aiLoopInterval.current) {
-      clearInterval(aiLoopInterval.current)
+      clearTimeout(aiLoopInterval.current)
       aiLoopInterval.current = null
     }
+    aiClipWarmRef.current = null
   }
 
   async function handleActivateAI() {
@@ -596,11 +745,11 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     setAiBusy(true)
     try {
       await fnActivateAI(roomId)
+      aiActiveRef.current = true
       
       // Mute local microphone
       await setLocalAudioEnabled(livekitRoom.current, false)
-      
-      playModeratorLine('Persona coming online. Host, pace your delivery—detector, keep your ears sharp!')
+      setIsMicMuted(true)
       
       // Start AI generation loop
       startAILoop()
@@ -631,6 +780,22 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     return <div className="py-24 text-center text-lg">Loading the call experience…</div>
   }
 
+  if (room.status === 'ended') {
+    const summary =
+      room.result === 'detector_win'
+        ? 'Detector called it in time. Game over!'
+        : room.result === 'target_win'
+        ? 'Target survived this round. Detector either bailed or guessed wrong.'
+        : 'Call ended early. Feel free to start a new round.'
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-center">
+        <div className="heading-font text-3xl">Call ended</div>
+        <p className="text-muted-foreground max-w-md">{summary}</p>
+        <Button onClick={() => router.push('/')}>Return home</Button>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen flex flex-col p-4 gap-4">
       <div className="flex items-center justify-between flex-shrink-0">
@@ -638,7 +803,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
           {isConnected ? 'Connected' : 'Connecting...'}
         </div>
         <div className="text-sm text-muted-foreground">Elapsed • <Timer start={timerStart} /></div>
-        <Button variant="outline" size="sm" onClick={() => router.push('/')}>
+        <Button variant="outline" size="sm" onClick={handleEndCall}>
           End Call
         </Button>
       </div>
@@ -651,8 +816,13 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
               const entry = participants[idx]
               const label = entry ? nameFor(entry.uid) : idx === 0 ? 'Host' : 'Guest'
               const personaActive = aiActive && entry?.uid === room.target_uid
-              const isCurrentlySpeaking = entry && isSpeaking[entry.uid]
+              const isCurrentlySpeaking = !!(entry && isSpeaking[entry.uid])
               const isYou = entry?.uid === userId
+              const participantMuted = entry
+                ? (entry.uid === userId ? isMicMuted : participantMuteMap[entry.uid] ?? true)
+                : true
+              const waveLevel = entry ? audioLevels[entry.uid] ?? 0 : 0
+              const yourLevel = userId ? audioLevels[userId] ?? 0 : 0
               
               return (
                 <div key={idx} className="rounded-2xl border border-border/80 bg-gradient-to-br from-[#F3EFE8] to-[#E3DDD3] p-3 space-y-3">
@@ -664,9 +834,15 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
                       <div className="heading-font text-lg">{label}</div>
                       {isYou && <span className="text-xs text-[#1F4B3A]">(you)</span>}
                     </div>
-                    <div className="text-xs text-muted-foreground flex items-center gap-1">
-                      <span className={`h-2 w-2 rounded-full ${isCurrentlySpeaking ? 'bg-[#1F4B3A] animate-pulse' : 'bg-[#B6ADA6]'}`}></span>
-                      {personaActive ? 'AI' : 'Human'}
+                    <div className="text-xs text-muted-foreground flex flex-col gap-1 items-end">
+                      <div className="flex items-center gap-1">
+                        <span className={`h-2 w-2 rounded-full ${isCurrentlySpeaking ? 'bg-[#1F4B3A] animate-pulse' : 'bg-[#B6ADA6]'}`}></span>
+                        {personaActive ? 'AI' : 'Human'}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className={`h-2 w-2 rounded-full ${participantMuted ? 'bg-[#B92B27]' : 'bg-[#1F4B3A]'}`}></span>
+                        {participantMuted ? 'Muted' : 'Live'}
+                      </div>
                     </div>
                   </div>
                   
@@ -680,14 +856,22 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
                         disabled={aiActive}
                       />
                       <div className="flex justify-center">
-                        <ScrollingWaveform active={!isMicMuted && isConnected} height={40} />
+                        <ScrollingWaveform
+                          active={!isMicMuted && isConnected}
+                          height={40}
+                          level={yourLevel}
+                        />
                       </div>
                     </>
                   )}
                   
                   {!isYou && entry && (
                     <div className="flex justify-center pt-2">
-                      <ScrollingWaveform active={isConnected && isCurrentlySpeaking} height={40} />
+                      <ScrollingWaveform
+                        active={isConnected && !participantMuted}
+                        height={40}
+                        level={waveLevel}
+                      />
                     </div>
                   )}
                 </div>
