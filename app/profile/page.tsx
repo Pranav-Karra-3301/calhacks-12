@@ -22,7 +22,6 @@ type MetricStats = {
   gamesPlayed: number
   aiMoments: number
   detectorAccuracy: number | null
-  transcriptsCaptured: number
 }
 
 export default function ProfilePage() {
@@ -36,7 +35,6 @@ export default function ProfilePage() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [stats, setStats] = useState<MetricStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
-  const [recentTranscripts, setRecentTranscripts] = useState<{ id: number; text: string; created_at: string; room_id?: string }[]>([])
   const heroName = profile?.display_name || 'Voice Adventurer'
   const [avatarOptions, setAvatarOptions] = useState<AvatarOptions>({})
   const [isCustomizationModalOpen, setIsCustomizationModalOpen] = useState(false)
@@ -61,11 +59,6 @@ export default function ProfilePage() {
       label: 'Detection accuracy',
       value: stats && stats.detectorAccuracy !== null ? `${stats.detectorAccuracy}%` : statsLoading ? '—' : '—',
       helper: 'As the detector',
-    },
-    {
-      label: 'Transcripts captured',
-      value: stats ? stats.transcriptsCaptured.toString() : statsLoading ? '—' : '0',
-      helper: 'Groq-powered snippets saved',
     },
   ]), [stats, statsLoading])
 
@@ -107,19 +100,17 @@ export default function ProfilePage() {
     ;(async () => {
       try {
         const uid = profile.id
-        const [rooms, games, ai, guesses, transcripts] = await Promise.all([
+        const [rooms, games, ai, guesses] = await Promise.all([
           supabase.from('rooms').select('id', { count: 'exact', head: true }).eq('created_by', uid),
           supabase.from('participants').select('room_id', { count: 'exact', head: true }).eq('uid', uid),
           supabase.from('events').select('id', { count: 'exact', head: true }).eq('uid', uid).eq('type', 'ai-activated'),
           supabase.from('participants').select('guess_correct').eq('uid', uid).eq('guess_used', true),
-          supabase.from('transcripts').select('id,text,created_at,room_id', { count: 'exact' }).eq('uid', uid).order('created_at', { ascending: false }).limit(5),
         ])
         if (cancelled) return
         if (rooms.error) throw rooms.error
         if (games.error) throw games.error
         if (ai.error) throw ai.error
         if (guesses.error) throw guesses.error
-        if (transcripts.error) throw transcripts.error
 
         const totalGuesses = guesses.data?.length ?? 0
         const detectorAccuracy = totalGuesses ? Math.round(((guesses.data?.filter(g => g.guess_correct).length ?? 0) / totalGuesses) * 100) : null
@@ -129,13 +120,10 @@ export default function ProfilePage() {
           gamesPlayed: games.count ?? 0,
           aiMoments: ai.count ?? 0,
           detectorAccuracy,
-          transcriptsCaptured: transcripts.count ?? (transcripts.data?.length ?? 0),
         })
-        setRecentTranscripts(transcripts.data ?? [])
       } catch (error) {
         if (!cancelled) {
           setStats(null)
-          setRecentTranscripts([])
         }
       } finally {
         if (!cancelled) setStatsLoading(false)
@@ -372,29 +360,8 @@ export default function ProfilePage() {
         </Card>
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="space-y-2">
-            <div className="heading-font text-2xl">Recent transcripts</div>
-            <p className="text-sm text-muted-foreground">A quick peek at what Groq captured lately.</p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {recentTranscripts.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No transcripts yet. Hop into a room and chat to populate this feed.</div>
-            ) : (
-              recentTranscripts.map((snippet) => (
-                <div key={snippet.id} className="rounded-2xl border border-border/80 bg-white/80 p-4">
-                  <div className="text-sm">{snippet.text}</div>
-                  <div className="text-xs text-muted-foreground mt-2">
-                    {new Date(snippet.created_at).toLocaleString()} • Room {snippet.room_id?.slice(0, 6) ?? '—'}
-                  </div>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
+      <section>
+        <Card className="w-full">
           <CardHeader className="space-y-2">
             <div className="heading-font text-2xl">Game shortcuts</div>
             <p className="text-sm text-muted-foreground">Jump straight into your next deception challenge.</p>
