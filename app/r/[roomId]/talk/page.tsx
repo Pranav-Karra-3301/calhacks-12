@@ -60,6 +60,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   const [moderatorMessages, setModeratorMessages] = useState<{ id: string; text: string }[]>([])
   const [moderatorBusy, setModeratorBusy] = useState(false)
   const [introPlayed, setIntroPlayed] = useState(false)
+  const introInProgress = useRef(false)
   
   // Timer state
   const [timerStart, setTimerStart] = useState(0)
@@ -486,6 +487,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   useEffect(() => {
     if (!room || introPlayed || !isConnected) return
     if (participants.length < 2) return
+    if (introInProgress.current) return
     playModeratorIntro()
   }, [room, introPlayed, isConnected, participants.length])
 
@@ -584,7 +586,37 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       
       // Publish to LiveKit room so both participants hear it
       if (livekitRoom.current && isConnected) {
-        await publishAudioBlob(livekitRoom.current, blob, 'moderator')
+        const playbackSeconds = await publishAudioBlob(livekitRoom.current, blob, 'moderator')
+        const waitMs = Number.isFinite(playbackSeconds)
+          ? Math.max(250, Math.ceil(playbackSeconds * 1000) + 250)
+          : 1000
+        await new Promise((resolve) => setTimeout(resolve, waitMs))
+      } else {
+        // Fallback: play locally if LiveKit isn't ready yet
+        await new Promise<void>((resolve, reject) => {
+          const url = URL.createObjectURL(blob)
+          const audio = new Audio(url)
+          const cleanup = () => {
+            audio.removeEventListener('ended', handleEnded)
+            audio.removeEventListener('error', handleError)
+            URL.revokeObjectURL(url)
+          }
+          const handleEnded = () => {
+            cleanup()
+            resolve()
+          }
+          const handleError = (event: Event) => {
+            console.error('Moderator audio playback failed:', event)
+            cleanup()
+            reject(event)
+          }
+          audio.addEventListener('ended', handleEnded, { once: true })
+          audio.addEventListener('error', handleError, { once: true })
+          audio.play().catch((error) => {
+            cleanup()
+            reject(error)
+          })
+        })
       }
       
       return true
@@ -601,23 +633,28 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
   async function playModeratorIntro(manual = false) {
     if (!room) return
-    const hostName = nameFor(room.target_uid ?? room.created_by)
-    const detectorName = room.detector_uid ? nameFor(room.detector_uid) : 'the detector'
-    const lines = [
-      `Hey ${hostName} and ${detectorName}! Welcome to Mimicry—the game where the host can swap themself out for a voice-cloned imposter mid-call and the detector has to report it before the timer burns out. Chat naturally, but remember someone is going to flip that switch.`,
-      `You'll hear from me if you need hints or rules. Alright, I'm unmuting you both now—if you need inspiration, peek at the suggested topics on the right. Have fun!`,
-    ]
-    for (const line of lines) {
-      const ok = await playModeratorLine(line)
-      if (!ok) {
-        if (!manual) {
-          setModeratorMessages((prev) => [...prev, { id: crypto.randomUUID(), text: 'Tap the Replay Intro button so I can give the rundown.' }])
+    introInProgress.current = true
+    try {
+      const hostName = nameFor(room.target_uid ?? room.created_by)
+      const detectorName = room.detector_uid ? nameFor(room.detector_uid) : 'the detector'
+      const lines = [
+        `Hey ${hostName} and ${detectorName}! Welcome to Mimicry—the game where the host can swap themself out for a voice-cloned imposter mid-call and the detector has to report it before the timer burns out. Chat naturally, but remember someone is going to flip that switch.`,
+        `You'll hear from me if you need hints or rules. Alright, I'm unmuting you both now—if you need inspiration, peek at the suggested topics on the right. Have fun!`,
+      ]
+      for (const line of lines) {
+        const ok = await playModeratorLine(line)
+        if (!ok) {
+          if (!manual) {
+            setModeratorMessages((prev) => [...prev, { id: crypto.randomUUID(), text: 'Tap the Replay Intro button so I can give the rundown.' }])
+          }
+          return
         }
-        return
       }
+      setIntroPlayed(true)
+      setIsMicMuted(false)
+    } finally {
+      introInProgress.current = false
     }
-    setIntroPlayed(true)
-    setIsMicMuted(false)
   }
 
   async function handleAskModerator() {
@@ -853,7 +890,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
                         onValueChange={setSelectedMic}
                         muted={isMicMuted}
                         onMutedChange={setIsMicMuted}
-                        disabled={aiActive}
+                        disabled={aiActive || !introPlayed}
                       />
                       <div className="flex justify-center">
                         <ScrollingWaveform
