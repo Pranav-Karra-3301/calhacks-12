@@ -9,12 +9,14 @@ import { Timer } from '@/components/Timer'
 import { MicSelector } from '@/components/ui/mic-selector'
 import { ScrollingWaveform } from '@/components/ui/waveform'
 import { supabase, getAccessToken, functionsUrl } from '@/lib/supabase'
-import { fnActivateAI, fnDetectorGuess, fnEndCall } from '@/lib/functions'
+import { fnActivateAI, fnDetectorGuess, fnEndCall, fnMarkIntro } from '@/lib/functions'
 import { publishAudioBlob, setLocalAudioEnabled } from '@/lib/livekit-audio'
 import { DeepgramLiveTranscriber } from '@/lib/deepgram-transcription'
 
 const MODERATOR_VOICE_ID = 'kdmDKE6EkgrWrrykO9Qt'
 const AI_MAX_SECONDS = 180
+const MAX_TRANSCRIPT_HISTORY = 400
+const MAX_CONTEXT_LINES = 200
 
 type RoomInfo = {
   id: string
@@ -26,10 +28,19 @@ type RoomInfo = {
   started_at: string | null
   status: string | null
   result?: string | null
+  intro_played_at?: string | null
 }
 
 type Participant = { uid: string; display_name: string | null; joined_at: string }
 type TranscriptLine = { id: number; text: string; uid: string | null; created_at: string; speaker_id?: number | null }
+type InsertTranscriptPayload = {
+  room_id: string
+  uid: string
+  text: string
+  start_ms: number | null
+  end_ms: number | null
+  speaker_id?: number | null
+}
 type AiClip = { text: string; audioBlob: Blob }
 
 export default function TalkPage({ params }: { params: { roomId: string } }) {
@@ -54,12 +65,41 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   // Transcript state
   const [transcripts, setTranscripts] = useState<TranscriptLine[]>([])
   const transcriptsRef = useRef<string[]>([])
+  const seenTranscriptIds = useRef<Set<number>>(new Set())
+  const appendTranscript = useCallback((line: TranscriptLine) => {
+    if (!line?.id) return
+    if (seenTranscriptIds.current.has(line.id)) return
+    seenTranscriptIds.current.add(line.id)
+    setTranscripts((prev) => {
+      const next = [...prev, line]
+      const overflow = Math.max(0, next.length - MAX_TRANSCRIPT_HISTORY)
+      if (overflow > 0) {
+        const removed = next.splice(0, overflow)
+        removed.forEach((removedLine) => {
+          if (removedLine?.id) {
+            seenTranscriptIds.current.delete(removedLine.id)
+          }
+        })
+      }
+      return next
+    })
+  }, [])
   
   // Moderator state
   const [question, setQuestion] = useState('')
   const [moderatorMessages, setModeratorMessages] = useState<{ id: string; text: string }[]>([])
   const [moderatorBusy, setModeratorBusy] = useState(false)
-  const [introPlayed, setIntroPlayed] = useState(false)
+  const introInProgress = useRef(false)
+  const introCompletedLocally = useRef(false)
+  const introAutoUnmuteRef = useRef(false)
+
+  const introPlayed = !!room?.intro_played_at
+
+  useEffect(() => {
+    introCompletedLocally.current = false
+    introInProgress.current = false
+    introAutoUnmuteRef.current = false
+  }, [roomId])
   
   // Timer state
   const [timerStart, setTimerStart] = useState(0)
@@ -208,24 +248,37 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     ;(async () => {
       const { data } = await supabase
         .from('transcripts')
-        .select('id, text, uid, created_at')
+        .select('id, text, uid, created_at, speaker_id')
         .eq('room_id', roomId)
         .order('created_at', { ascending: true })
         .limit(200)
-      if (mounted) setTranscripts((data ?? []) as TranscriptLine[])
+      if (mounted) {
+        const loaded = (data ?? []) as TranscriptLine[]
+        seenTranscriptIds.current = new Set(loaded.map((line) => line.id))
+        setTranscripts(loaded)
+      }
     })()
     const channel = supabase.channel(`talk-${roomId}-transcripts`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transcripts', filter: `room_id=eq.${roomId}` }, (payload) => {
-        setTranscripts((prev) => [...prev, payload.new as TranscriptLine])
+        appendTranscript(payload.new as TranscriptLine)
       })
       .subscribe()
     return () => { mounted = false; supabase.removeChannel(channel) }
-  }, [roomId])
+  }, [roomId, appendTranscript])
 
   // Update transcript ref
   useEffect(() => {
-    transcriptsRef.current = transcripts.slice(-20).map((line) => line.text)
-  }, [transcripts])
+    transcriptsRef.current = transcripts
+      .slice(-MAX_CONTEXT_LINES)
+      .map((line) => {
+        const speakerLabel = line.uid
+          ? nameFor(line.uid)
+          : typeof line.speaker_id === 'number'
+          ? `Speaker ${line.speaker_id}`
+          : 'Unknown'
+        return `${speakerLabel}: ${line.text}`
+      })
+  }, [transcripts, participants, userId])
 
   // Set timer
   useEffect(() => {
@@ -420,7 +473,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
             // Save to Supabase
             try {
-              const basePayload = {
+              const basePayload: InsertTranscriptPayload = {
                 room_id: roomId,
                 uid: userId,
                 text: data.transcript,
@@ -433,27 +486,39 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
                   : null,
               } as const
 
-              const payloadWithSpeaker = {
+              const payloadWithSpeaker: InsertTranscriptPayload = {
                 ...basePayload,
                 speaker_id: typeof data.speaker === 'number' ? data.speaker : null,
               }
 
-              let { error } = await supabase
-                .from('transcripts')
-                .insert(payloadWithSpeaker)
+              const insertTranscript = async (payload: InsertTranscriptPayload) => {
+                const { data: insertedRow, error } = await supabase
+                  .from('transcripts')
+                  .insert(payload)
+                  .select()
+                  .single()
+                return {
+                  data: (insertedRow ?? null) as TranscriptLine | null,
+                  error,
+                }
+              }
+
+              let { data: inserted, error } = await insertTranscript(payloadWithSpeaker)
 
               // Some environments may not have the speaker_id column yet.
               if (error && (error.code === '42703' || /speaker_id/i.test(error.message || ''))) {
                 console.warn('[Deepgram] speaker_id column missing, retrying without diarization column')
-                const { error: fallbackError } = await supabase
-                  .from('transcripts')
-                  .insert(basePayload)
-                error = fallbackError
+                const fallback = await insertTranscript(basePayload)
+                error = fallback.error
+                inserted = fallback.data
               }
 
               if (error) {
                 console.error('[Deepgram] Failed to save transcript:', error)
               } else {
+                if (inserted) {
+                  appendTranscript(inserted)
+                }
                 console.log('[Deepgram] Transcript saved to database')
               }
             } catch (error) {
@@ -480,14 +545,26 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       deepgramRef.current?.stop()
       deepgramRef.current = null
     }
-  }, [roomId, userId, isConnected, aiActive])
+  }, [roomId, userId, isConnected, aiActive, appendTranscript])
 
   // Play intro when room loads
   useEffect(() => {
     if (!room || introPlayed || !isConnected) return
     if (participants.length < 2) return
+    if (introInProgress.current || introCompletedLocally.current) return
+    if (room.created_by !== userId) return
     playModeratorIntro()
-  }, [room, introPlayed, isConnected, participants.length])
+  }, [room, introPlayed, isConnected, participants.length, userId])
+
+  useEffect(() => {
+    if (!introPlayed) {
+      introAutoUnmuteRef.current = false
+      return
+    }
+    if (introAutoUnmuteRef.current) return
+    introAutoUnmuteRef.current = true
+    setIsMicMuted(false)
+  }, [introPlayed])
 
   // Announce AI timeout
   useEffect(() => {
@@ -584,7 +661,37 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       
       // Publish to LiveKit room so both participants hear it
       if (livekitRoom.current && isConnected) {
-        await publishAudioBlob(livekitRoom.current, blob, 'moderator')
+        const playbackSeconds = await publishAudioBlob(livekitRoom.current, blob, 'moderator')
+        const waitMs = Number.isFinite(playbackSeconds)
+          ? Math.max(250, Math.ceil(playbackSeconds * 1000) + 250)
+          : 1000
+        await new Promise((resolve) => setTimeout(resolve, waitMs))
+      } else {
+        // Fallback: play locally if LiveKit isn't ready yet
+        await new Promise<void>((resolve, reject) => {
+          const url = URL.createObjectURL(blob)
+          const audio = new Audio(url)
+          const cleanup = () => {
+            audio.removeEventListener('ended', handleEnded)
+            audio.removeEventListener('error', handleError)
+            URL.revokeObjectURL(url)
+          }
+          const handleEnded = () => {
+            cleanup()
+            resolve()
+          }
+          const handleError = (event: Event) => {
+            console.error('Moderator audio playback failed:', event)
+            cleanup()
+            reject(event)
+          }
+          audio.addEventListener('ended', handleEnded, { once: true })
+          audio.addEventListener('error', handleError, { once: true })
+          audio.play().catch((error) => {
+            cleanup()
+            reject(error)
+          })
+        })
       }
       
       return true
@@ -601,13 +708,11 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
   async function playModeratorIntro(manual = false) {
     if (!room) return
-    const hostName = nameFor(room.target_uid ?? room.created_by)
-    const detectorName = room.detector_uid ? nameFor(room.detector_uid) : 'the detector'
-    const lines = [
-      `Hey ${hostName} and ${detectorName}! Welcome to Mimicry—the game where the host can swap themself out for a voice-cloned imposter mid-call and the detector has to report it before the timer burns out. Chat naturally, but remember someone is going to flip that switch.`,
-      `You'll hear from me if you need hints or rules. Alright, I'm unmuting you both now—if you need inspiration, peek at the suggested topics on the right. Have fun!`,
-    ]
-    for (const line of lines) {
+    introInProgress.current = true
+    try {
+      const hostName = nameFor(room.target_uid ?? room.created_by)
+      const detectorName = room.detector_uid ? nameFor(room.detector_uid) : 'the detector'
+      const line = `Hey ${hostName} and ${detectorName}! Welcome to Mimicry—the host can swap in a voice-cloned imposter mid-call while the detector races to call it out. You're both muted until I wrap this line, then jump in and keep it natural.`
       const ok = await playModeratorLine(line)
       if (!ok) {
         if (!manual) {
@@ -615,9 +720,16 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
         }
         return
       }
+      introCompletedLocally.current = true
+      setIsMicMuted(false)
+      try {
+        await fnMarkIntro(roomId)
+      } catch (error) {
+        console.error('Failed to mark intro completion:', error)
+      }
+    } finally {
+      introInProgress.current = false
     }
-    setIntroPlayed(true)
-    setIsMicMuted(false)
   }
 
   async function handleAskModerator() {
@@ -853,7 +965,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
                         onValueChange={setSelectedMic}
                         muted={isMicMuted}
                         onMutedChange={setIsMicMuted}
-                        disabled={aiActive}
+                        disabled={aiActive || !introPlayed}
                       />
                       <div className="flex justify-center">
                         <ScrollingWaveform
