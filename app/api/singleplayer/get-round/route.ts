@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 import manifest from '@/public/librispeech-manifest.json'
 
 export const runtime = 'nodejs'
@@ -8,7 +9,7 @@ const DEFAULT_VOICE_ID = 'pNInz6obpgDQGcFmaJgB' // Adam voice
 
 export async function GET() {
   try {
-    // Randomly select a sample
+    // Randomly select a sample text
     const samples = manifest.samples
     const sample = samples[Math.floor(Math.random() * samples.length)]
     
@@ -24,8 +25,8 @@ export async function GET() {
         return NextResponse.json({ error: 'Missing ELEVENLAB_API_KEY' }, { status: 500 })
       }
 
-      // Use ElevenLabs TTS to generate audio
-      const models = ['eleven_flash_v2_5', 'eleven_turbo_v2_5', 'eleven_multilingual_v2']
+      // Use ElevenLabs TTS to generate audio with v3 model
+      const models = ['eleven_v3', 'eleven_flash_v2_5', 'eleven_turbo_v2_5']
       let audioBuffer: Buffer | null = null
       
       for (const model of models) {
@@ -66,15 +67,42 @@ export async function GET() {
         sampleId: sample.id,
       })
     } else {
-      // For human audio, we'll use browser's speech synthesis as a proxy for "real" audio
-      // In production, this would be actual LibriSpeech audio files
+      // For human audio, fetch from Supabase Storage "human-audio" bucket
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!
+      )
+
+      // List all files in the human-audio bucket
+      const { data: files, error: listError } = await supabase.storage
+        .from('human-audio')
+        .list()
+
+      if (listError || !files || files.length === 0) {
+        console.error('Error listing human audio files:', listError)
+        return NextResponse.json({ error: 'No human audio files available' }, { status: 500 })
+      }
+
+      // Filter only .flac files
+      const flacFiles = files.filter(f => f.name.endsWith('.flac'))
+      if (flacFiles.length === 0) {
+        return NextResponse.json({ error: 'No FLAC files found' }, { status: 500 })
+      }
+
+      // Pick a random FLAC file
+      const randomFile = flacFiles[Math.floor(Math.random() * flacFiles.length)]
+
+      // Get public URL for the file
+      const { data: { publicUrl } } = supabase.storage
+        .from('human-audio')
+        .getPublicUrl(randomFile.name)
+
       return NextResponse.json({
         roundId,
-        audioUrl: null, // Will use speech synthesis on client
-        text: sample.text,
+        audioUrl: publicUrl,
         isAi: false,
         transcriptLength: sample.text.length,
-        sampleId: sample.id,
+        sampleId: randomFile.name, // Use the actual filename
       })
     }
   } catch (e: any) {

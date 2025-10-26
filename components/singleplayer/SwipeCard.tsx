@@ -49,21 +49,15 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
   }, [disabled, isPlaying, audioUrl, text])
 
   const playAudio = async () => {
-    if (audioUrl) {
-      // Play from data URL
-      if (audioRef.current) {
-        audioRef.current.src = audioUrl
+    if (audioUrl && audioRef.current) {
+      // Play from URL (either base64 data URL for AI or public URL for human FLAC)
+      audioRef.current.src = audioUrl
+      try {
         await audioRef.current.play()
         setIsPlaying(true)
+      } catch (error) {
+        console.error('Error playing audio:', error)
       }
-    } else if (text && 'speechSynthesis' in window) {
-      // Use speech synthesis for "human" audio
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.rate = 0.9
-      utterance.pitch = 1.0
-      utterance.onend = () => setIsPlaying(false)
-      speechSynthesis.speak(utterance)
-      setIsPlaying(true)
     }
   }
 
@@ -71,9 +65,6 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current.currentTime = 0
-    }
-    if ('speechSynthesis' in window) {
-      speechSynthesis.cancel()
     }
     setIsPlaying(false)
   }
