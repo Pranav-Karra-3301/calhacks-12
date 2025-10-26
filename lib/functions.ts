@@ -52,6 +52,19 @@ export async function fnActivateAI(roomId: string) {
   return data as { ok: boolean }
 }
 
+export async function fnTakeBackControl(roomId: string, sessionId?: string | null) {
+  const data = await callApi('/api/functions/take-back-control', {
+    roomId,
+    sessionId: sessionId ?? null
+  })
+  return data as {
+    ok: boolean
+    aiDurationMs: number
+    totalDurationMs: number
+    takebackCount: number
+  }
+}
+
 export async function fnMarkIntro(roomId: string) {
   const data = await callApi('/api/functions/mark-intro', { roomId })
   return data as { ok: boolean; alreadyCompleted?: boolean }

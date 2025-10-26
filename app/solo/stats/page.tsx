@@ -143,7 +143,7 @@ export default function SoloStatsPage() {
               <div className="grid md:grid-cols-2 gap-6">
                 <Card>
                   <CardHeader>
-                    <h3 className="text-xl font-semibold">🤖 AI Detection</h3>
+                    <h3 className="text-xl font-semibold">AI Detection</h3>
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-4">
@@ -161,7 +161,7 @@ export default function SoloStatsPage() {
 
                 <Card>
                   <CardHeader>
-                    <h3 className="text-xl font-semibold">👤 Human Detection</h3>
+                    <h3 className="text-xl font-semibold">Human Detection</h3>
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-4">
@@ -198,4 +198,3 @@ export default function SoloStatsPage() {
     </div>
   )
 }
-

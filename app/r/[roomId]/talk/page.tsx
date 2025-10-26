@@ -9,12 +9,15 @@ import { Timer } from '@/components/Timer'
 import { MicSelector } from '@/components/ui/mic-selector'
 import { ScrollingWaveform } from '@/components/ui/waveform'
 import { supabase, getAccessToken, functionsUrl } from '@/lib/supabase'
-import { fnActivateAI, fnDetectorGuess, fnEndCall, fnMarkIntro } from '@/lib/functions'
+import { createClient } from '@supabase/supabase-js'
+import { fnActivateAI, fnDetectorGuess, fnEndCall, fnMarkIntro, fnTakeBackControl } from '@/lib/functions'
 import { publishAudioBlob, setLocalAudioEnabled } from '@/lib/livekit-audio'
 import { DeepgramLiveTranscriber } from '@/lib/deepgram-transcription'
 import { AI_TEXT_MODEL, AI_TTS_MODEL, MODERATOR_VOICE_ID } from '@/lib/ai-config'
 
 const AI_MAX_SECONDS = 180
+const MAX_TRANSCRIPT_HISTORY = 400
+const MAX_CONTEXT_LINES = 200
 
 type RoomInfo = {
   id: string
@@ -27,6 +30,11 @@ type RoomInfo = {
   status: string | null
   result?: string | null
   intro_played_at?: string | null
+  ai_speaking_duration_ms?: number | null
+  ai_response_count?: number | null
+  ai_takeback_count?: number | null
+  ai_deactivated_at?: string | null
+  ai_deactivation_reason?: string | null
 }
 
 type Participant = { uid: string; display_name: string | null; joined_at: string }
@@ -56,6 +64,26 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   // Transcript state
   const [transcripts, setTranscripts] = useState<TranscriptLine[]>([])
   const transcriptsRef = useRef<string[]>([])
+  const seenTranscriptIds = useRef<Set<number>>(new Set())
+
+  const appendTranscript = useCallback((line: TranscriptLine) => {
+    if (!line?.id) return
+    if (seenTranscriptIds.current.has(line.id)) return
+    seenTranscriptIds.current.add(line.id)
+    setTranscripts((prev) => {
+      const next = [...prev, line]
+      const overflow = Math.max(0, next.length - MAX_TRANSCRIPT_HISTORY)
+      if (overflow > 0) {
+        const removed = next.splice(0, overflow)
+        removed.forEach((removedLine) => {
+          if (removedLine?.id) {
+            seenTranscriptIds.current.delete(removedLine.id)
+          }
+        })
+      }
+      return next
+    })
+  }, [])
   
   // Moderator state
   const [question, setQuestion] = useState('')
@@ -86,6 +114,11 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   const aiActiveRef = useRef(false)
   const [aiVoiceInfo, setAiVoiceInfo] = useState<{ id: string; name: string | null } | null>(null)
   const [aiVoiceResolved, setAiVoiceResolved] = useState(false)
+  const [aiSessionId, setAiSessionId] = useState<string | null>(null)
+  const [aiTotalDuration, setAiTotalDuration] = useState(0)
+  const [aiResponseCount, setAiResponseCount] = useState(0)
+  const [aiManuallyDeactivated, setAiManuallyDeactivated] = useState(false)
+  const [takebackCount, setTakebackCount] = useState(0)
   
   // Detector state
   const [detectorResult, setDetectorResult] = useState<string | null>(null)
@@ -108,6 +141,13 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       return { ...prev, [uid]: muted }
     })
   }, [])
+
+  // Helper function to get name for a user
+  const nameFor = useCallback((uid: string | null): string => {
+    if (!uid) return 'System'
+    if (uid === userId) return 'You'
+    return participants.find((p) => p.uid === uid)?.display_name || 'Player'
+  }, [participants, userId])
   
   const requestRoomEnd = useCallback(async (reason: string, leaver?: string | null) => {
     if (roomEndRequestedRef.current) {
@@ -217,24 +257,37 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     ;(async () => {
       const { data } = await supabase
         .from('transcripts')
-        .select('id, text, uid, created_at')
+        .select('id, text, uid, created_at, speaker_id')
         .eq('room_id', roomId)
         .order('created_at', { ascending: true })
         .limit(200)
-      if (mounted) setTranscripts((data ?? []) as TranscriptLine[])
+      if (mounted) {
+        const loaded = (data ?? []) as TranscriptLine[]
+        seenTranscriptIds.current = new Set(loaded.map((line) => line.id))
+        setTranscripts(loaded)
+      }
     })()
     const channel = supabase.channel(`talk-${roomId}-transcripts`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transcripts', filter: `room_id=eq.${roomId}` }, (payload) => {
-        setTranscripts((prev) => [...prev, payload.new as TranscriptLine])
+        appendTranscript(payload.new as TranscriptLine)
       })
       .subscribe()
     return () => { mounted = false; supabase.removeChannel(channel) }
-  }, [roomId])
+  }, [roomId, appendTranscript])
 
-  // Update transcript ref
+  // Update transcript ref with proper speaker labels for AI context
   useEffect(() => {
-    transcriptsRef.current = transcripts.slice(-20).map((line) => line.text)
-  }, [transcripts])
+    transcriptsRef.current = transcripts
+      .slice(-MAX_CONTEXT_LINES)
+      .map((line) => {
+        const speakerLabel = line.uid
+          ? nameFor(line.uid)
+          : typeof line.speaker_id === 'number'
+          ? `Speaker ${line.speaker_id}`
+          : 'Unknown'
+        return `${speakerLabel}: ${line.text}`
+      })
+  }, [transcripts, nameFor])
 
   useEffect(() => {
     if (!roomId || !userId) {
@@ -347,8 +400,9 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     return () => clearInterval(id)
   }, [room?.ai_activated_at])
   
-  // Calculate aiActive
-  const aiActive = !!room?.ai_activated_at && !aiFinished
+  // Calculate aiActive with manual deactivation support
+  const aiActive = !!room?.ai_activated_at && !aiFinished && !aiManuallyDeactivated
+
   useEffect(() => {
     aiActiveRef.current = aiActive
     if (!aiActive) {
@@ -642,6 +696,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
   const topic = room?.topic || 'Freestyle banter'
   const isHost = room?.created_by === userId
+  const canReactivateAI = isHost && !aiActive && aiManuallyDeactivated && aiCountdown > 0
   const aiVoiceLabel = aiVoiceInfo?.name || aiVoiceInfo?.id || (aiVoiceResolved ? 'No voice linked' : 'Checking voice…')
 
   // Debug role
@@ -656,12 +711,6 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       })
     }
   }, [role, room, userId])
-
-  function nameFor(uid: string | null) {
-    if (!uid) return 'System'
-    if (uid === userId) return 'You'
-    return participants.find((p) => p.uid === uid)?.display_name || 'Player'
-  }
 
   async function handleEndCall() {
     if (livekitRoom.current) {
@@ -686,7 +735,15 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     tone: 'success' | 'warning' | 'danger' | 'neutral'
   }
 
-  function getEndScreenCopy(result: RoomInfo['result'] | null | undefined, playerRole: PlayerRole): EndScreenCopy {
+  function getEndScreenCopy(
+    result: RoomInfo['result'] | null | undefined,
+    playerRole: PlayerRole,
+    aiStats?: {
+      totalDurationMs: number
+      responseCount: number
+      takebackCount: number
+    }
+  ): EndScreenCopy {
     const base: EndScreenCopy = {
       badge: 'Call closed',
       title: 'Call ended',
@@ -701,28 +758,46 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
     if (result === 'detector_win') {
       if (playerRole === 'detector') {
+        const details = [
+          'Persona audio is muted for everyone.',
+          'Host can start a rematch whenever you are ready.',
+        ]
+
+        if (aiStats && aiStats.totalDurationMs > 0) {
+          details.unshift(`AI spoke for ${Math.round(aiStats.totalDurationMs / 1000)}s with ${aiStats.responseCount} responses`)
+          if (aiStats.takebackCount > 0) {
+            details.push(`Control switched ${aiStats.takebackCount} time${aiStats.takebackCount > 1 ? 's' : ''}`)
+          }
+        }
+
         return {
           badge: 'AI got caught',
           title: 'You caught the AI!',
           subtitle: 'Your call landed before the persona could finish the bluff.',
-          details: [
-            'Persona audio is muted for everyone.',
-            'Host can start a rematch whenever you are ready.',
-          ],
+          details,
           emoji: '🎯',
           tone: 'success',
         }
       }
 
       if (playerRole === 'target') {
+        const details = [
+          'Try remixing your prompt or cadence for the next round.',
+          'Jump back to the lobby when you are ready.',
+        ]
+
+        if (aiStats && aiStats.totalDurationMs > 0) {
+          details.unshift(`AI managed ${aiStats.responseCount} responses in ${Math.round(aiStats.totalDurationMs / 1000)}s`)
+          if (aiStats.takebackCount > 0) {
+            details.push(`You took back control ${aiStats.takebackCount} time${aiStats.takebackCount > 1 ? 's' : ''}`)
+          }
+        }
+
         return {
           badge: 'AI got caught',
           title: 'AI got caught',
           subtitle: 'Detector spotted the takeover before the timer ran out.',
-          details: [
-            'Try remixing your prompt or cadence for the next round.',
-            'Jump back to the lobby when you are ready.',
-          ],
+          details,
           emoji: '🕵️',
           tone: 'danger',
         }
@@ -743,28 +818,49 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
     if (result === 'target_win') {
       if (playerRole === 'target') {
+        const details = [
+          'Detector is out of guesses.',
+          'Run it back or celebrate the win in the lobby.',
+        ]
+
+        if (aiStats && aiStats.totalDurationMs > 0) {
+          const percentage = Math.round((aiStats.totalDurationMs / (AI_MAX_SECONDS * 1000)) * 100)
+          details.unshift(`AI successfully spoke for ${Math.round(aiStats.totalDurationMs / 1000)}s (${percentage}% of max time)`)
+          details.unshift(`AI generated ${aiStats.responseCount} convincing responses`)
+          if (aiStats.takebackCount > 0) {
+            details.push(`You strategically took control ${aiStats.takebackCount} time${aiStats.takebackCount > 1 ? 's' : ''}`)
+          }
+        }
+
         return {
           badge: 'AI fooled your friend',
           title: 'The AI fooled your friend',
           subtitle: 'You kept the persona sounding human until the buzzer.',
-          details: [
-            'Detector is out of guesses.',
-            'Run it back or celebrate the win in the lobby.',
-          ],
+          details,
           emoji: '🤖',
           tone: 'success',
         }
       }
 
       if (playerRole === 'detector') {
+        const details = [
+          'Watch for the subtle tells next time.',
+          'Ask for another round to redeem yourself.',
+        ]
+
+        if (aiStats && aiStats.totalDurationMs > 0) {
+          details.unshift(`AI spoke for ${Math.round(aiStats.totalDurationMs / 1000)}s total`)
+          details.unshift(`The AI generated ${aiStats.responseCount} responses that fooled you`)
+          if (aiStats.takebackCount > 0) {
+            details.push(`Host switched control ${aiStats.takebackCount} time${aiStats.takebackCount > 1 ? 's' : ''} to confuse you`)
+          }
+        }
+
         return {
           badge: 'AI persona win',
           title: "You didn't catch the AI",
           subtitle: 'The persona stayed undercover long enough to win this round.',
-          details: [
-            'Watch for the subtle tells next time.',
-            'Ask for another round to redeem yourself.',
-          ],
+          details,
           emoji: '🙈',
           tone: 'warning',
         }
@@ -900,6 +996,7 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
       body: JSON.stringify({
         roomId,
         recentTranscripts: transcriptsRef.current,
+        sessionId: aiSessionId,
       }),
     })
 
@@ -947,6 +1044,9 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
       const playbackDuration = await publishAudioBlob(livekitRoom.current, clip.audioBlob, 'ai-persona')
 
+      // Track AI response count
+      setAiResponseCount(prev => prev + 1)
+
       if (userId) {
         await supabase.from('transcripts').insert({
           room_id: roomId,
@@ -990,20 +1090,63 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
 
   async function handleActivateAI() {
     if (!livekitRoom.current || !isConnected) return
-    
+
     setAiBusy(true)
     try {
+      // Create a unique session ID for this AI activation
+      const sessionId = crypto.randomUUID()
+      setAiSessionId(sessionId)
+
+      // Reset manual deactivation flag if reactivating
+      setAiManuallyDeactivated(false)
+      setAiResponseCount(0)
+
       await fnActivateAI(roomId)
       aiActiveRef.current = true
-      
+
       // Mute local microphone
       await setLocalAudioEnabled(livekitRoom.current, false)
       setIsMicMuted(true)
-      
+
       // Start AI generation loop
       startAILoop()
     } catch (e: any) {
       setModeratorMessages((prev) => [...prev, { id: crypto.randomUUID(), text: e?.message || 'Could not activate AI just yet.' }])
+    } finally {
+      setAiBusy(false)
+    }
+  }
+
+  async function handleTakeBackControl() {
+    if (!livekitRoom.current || !isConnected || !aiActive) return
+
+    setAiBusy(true)
+    try {
+      const result = await fnTakeBackControl(roomId, aiSessionId)
+
+      // Stop AI and mark as manually deactivated
+      aiActiveRef.current = false
+      setAiManuallyDeactivated(true)
+      stopAILoop()
+
+      // Unmute microphone
+      await setLocalAudioEnabled(livekitRoom.current, true)
+      setIsMicMuted(false)
+
+      // Update statistics
+      setAiTotalDuration(result.totalDurationMs)
+      setTakebackCount(result.takebackCount)
+
+      // Show feedback to user
+      setModeratorMessages((prev) => [...prev, {
+        id: crypto.randomUUID(),
+        text: `You've taken back control! AI spoke for ${Math.round(result.aiDurationMs / 1000)}s. You can reactivate AI if time remains.`
+      }])
+    } catch (e: any) {
+      setModeratorMessages((prev) => [...prev, {
+        id: crypto.randomUUID(),
+        text: e?.message || 'Could not take back control.'
+      }])
     } finally {
       setAiBusy(false)
     }
@@ -1030,7 +1173,11 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   }
 
   if (room.status === 'ended') {
-    const endCopy = getEndScreenCopy(room.result, role)
+    const endCopy = getEndScreenCopy(room.result, role, {
+      totalDurationMs: aiTotalDuration || room?.ai_speaking_duration_ms || 0,
+      responseCount: aiResponseCount || room?.ai_response_count || 0,
+      takebackCount: takebackCount || room?.ai_takeback_count || 0,
+    })
     const toneStyles = {
       success: { badge: 'bg-[#1F4B3A]/15 text-[#1F4B3A]', icon: 'bg-[#1F4B3A]/10 text-[#1F4B3A]' },
       warning: { badge: 'bg-[#D97706]/15 text-[#9A5B00]', icon: 'bg-[#D97706]/10 text-[#9A5B00]' },
@@ -1076,7 +1223,12 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
           {isConnected ? 'Connected' : 'Connecting...'}
         </div>
         <div className="text-sm text-muted-foreground">Elapsed • <Timer start={timerStart} /></div>
-        <Button variant="outline" size="sm" onClick={handleEndCall}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleEndCall}
+          className="py-1.5 px-3"
+        >
           End Call
         </Button>
       </div>
@@ -1110,7 +1262,14 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
                     <div className="text-xs text-muted-foreground flex flex-col gap-1 items-end">
                       <div className="flex items-center gap-1">
                         <span className={`h-2 w-2 rounded-full ${isCurrentlySpeaking ? 'bg-[#1F4B3A] animate-pulse' : 'bg-[#B6ADA6]'}`}></span>
-                        {personaActive ? 'AI' : 'Human'}
+                        {personaActive ? (
+                          <span className="flex items-center gap-1">
+                            <span className="text-[#D97706] font-semibold">AI</span>
+                            {aiResponseCount > 0 && (
+                              <span className="text-[10px] text-[#D97706]/70">({aiResponseCount})</span>
+                            )}
+                          </span>
+                        ) : 'Human'}
                       </div>
                       <div className="flex items-center gap-1">
                         <span className={`h-2 w-2 rounded-full ${participantMuted ? 'bg-[#B92B27]' : 'bg-[#1F4B3A]'}`}></span>
@@ -1159,17 +1318,35 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
               <p className="text-xs text-muted-foreground">Powered by Deepgram Nova-3 • Real-time streaming</p>
             </CardHeader>
             <CardContent className="space-y-3 max-h-64 overflow-y-auto">
-              {transcripts.map((line) => (
-                <div key={line.id} className="rounded-2xl border border-border/60 p-3 bg-white/80">
-                  <div className="text-xs text-muted-foreground">
-                    {nameFor(line.uid)}
-                    {line.speaker_id !== undefined && line.speaker_id !== null && ` (Speaker ${line.speaker_id})`}
-                    {' · '}
-                    {new Date(line.created_at).toLocaleTimeString()}
+              {transcripts.map((line) => {
+                const isAiMessage = line.uid === room.target_uid && aiActive &&
+                  new Date(line.created_at) > new Date(room.ai_activated_at || 0)
+
+                return (
+                  <div
+                    key={line.id}
+                    className={`rounded-2xl border p-3 transition-all ${
+                      isAiMessage
+                        ? 'border-[#D97706]/30 bg-gradient-to-r from-[#FFF8F0] to-white shadow-sm'
+                        : 'border-border/60 bg-white/80'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span>{nameFor(line.uid)}</span>
+                      {isAiMessage && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-[#D97706]/10 text-[#D97706] text-[10px] font-medium">
+                          AI
+                        </span>
+                      )}
+                      {line.speaker_id !== undefined && line.speaker_id !== null && (
+                        <span>(Speaker {line.speaker_id})</span>
+                      )}
+                      <span className="ml-auto">{new Date(line.created_at).toLocaleTimeString()}</span>
+                    </div>
+                    <div className="text-sm mt-1">{line.text}</div>
                   </div>
-                  <div className="text-sm mt-1">{line.text}</div>
-                </div>
-              ))}
+                )
+              })}
               {transcripts.length === 0 && (
                 <div className="text-sm text-muted-foreground text-center py-8">
                   Start talking! Transcripts will appear here.
@@ -1211,14 +1388,30 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
                 ))}
               </div>
               <div className="space-y-2">
-                <Textarea 
-                  placeholder="Ask the moderator anything" 
-                  value={question} 
-                  onChange={(e) => setQuestion(e.target.value)} 
+                <Textarea
+                  placeholder="Ask the moderator anything"
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
                 />
-                <Button onClick={handleAskModerator} disabled={moderatorBusy}>
-                  {moderatorBusy ? 'Thinking…' : 'Ask moderator'}
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleAskModerator}
+                    disabled={moderatorBusy}
+                    className="flex-1 py-2 px-4"
+                  >
+                    {moderatorBusy ? 'Thinking…' : 'Ask moderator'}
+                  </Button>
+                  {!introPlayed && (
+                    <Button
+                      onClick={() => playModeratorIntro(true)}
+                      disabled={moderatorBusy || introInProgress.current}
+                      variant="outline"
+                      className="py-2 px-4"
+                    >
+                      Play Intro
+                    </Button>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -1230,32 +1423,106 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               {isHost && (
-                <div className="space-y-2">
-                  <div className="text-xs text-muted-foreground">
-                    AI persona window ({formatSeconds(Math.min(aiCountdown, AI_MAX_SECONDS))} / {formatSeconds(AI_MAX_SECONDS)})
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>AI persona window ({formatSeconds(Math.min(aiCountdown, AI_MAX_SECONDS))} / {formatSeconds(AI_MAX_SECONDS)})</span>
+                      {aiActive && (
+                        <span className="flex items-center gap-1">
+                          <span className="h-2 w-2 rounded-full bg-[#1F4B3A] animate-pulse"></span>
+                          AI Active
+                        </span>
+                      )}
+                    </div>
+                    <div className="h-3 rounded-full bg-[#E2DBD3] relative overflow-hidden">
+                      <div
+                        className={`h-3 rounded-full transition-all duration-500 ${
+                          aiActive ? 'bg-gradient-to-r from-[#1F4B3A] to-[#2A5C46] animate-pulse' :
+                          aiManuallyDeactivated ? 'bg-[#D97706]' : 'bg-[#B6ADA6]'
+                        }`}
+                        style={{ width: `${Math.min(100, (aiCountdown / AI_MAX_SECONDS) * 100)}%` }}
+                      />
+                      {takebackCount > 0 && (
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <span className="text-[10px] font-semibold text-white/80 drop-shadow-sm">
+                            {takebackCount} takeback{takebackCount > 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="h-2 rounded-full bg-[#E2DBD3]">
-                    <div 
-                      className={`h-2 rounded-full ${aiActive ? 'bg-[#1F4B3A]' : 'bg-[#B6ADA6]'}`} 
-                      style={{ width: `${Math.min(100, (aiCountdown / AI_MAX_SECONDS) * 100)}%` }} 
-                    />
+
+                  <div className="grid gap-2">
+                    {!aiActive && (
+                      <Button
+                        onClick={handleActivateAI}
+                        disabled={aiActive || aiBusy || !isConnected || (aiCountdown <= 0 && !canReactivateAI)}
+                        className="w-full flex flex-col items-start gap-0.5 py-3 px-4"
+                        variant={canReactivateAI ? "secondary" : "default"}
+                      >
+                        <span className="flex items-center gap-2">
+                          {canReactivateAI ? (
+                            <>
+                              <span>🔄</span>
+                              <span>Reactivate AI persona</span>
+                            </>
+                          ) : aiBusy ? (
+                            <>
+                              <span className="h-3 w-3 border-2 border-current border-t-transparent rounded-full animate-spin"></span>
+                              <span>Warming up AI...</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>🤖</span>
+                              <span>Let AI persona take over</span>
+                            </>
+                          )}
+                        </span>
+                        <span className="text-[11px] opacity-70">
+                          Model: {AI_TEXT_MODEL} · Voice: {aiVoiceLabel}
+                        </span>
+                      </Button>
+                    )}
+
+                    {aiActive && (
+                      <Button
+                        onClick={handleTakeBackControl}
+                        disabled={!aiActive || aiBusy}
+                        variant="outline"
+                        className="w-full flex flex-col items-start gap-0.5 py-3 px-4 border-[#B92B27]/30 hover:bg-[#B92B27]/10"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span>🎤</span>
+                          <span>Take back control</span>
+                        </span>
+                        <span className="text-[11px] opacity-80">
+                          AI has spoken {aiResponseCount} time{aiResponseCount !== 1 ? 's' : ''}
+                        </span>
+                      </Button>
+                    )}
                   </div>
-                  <Button
-                    onClick={handleActivateAI}
-                    disabled={aiActive || aiBusy || !isConnected}
-                    className="w-full flex flex-col items-start gap-0.5"
-                  >
-                    <span>{aiActive ? 'Persona live' : aiBusy ? 'Warming up…' : 'Let AI persona take over'}</span>
-                    <span className="text-[11px] opacity-80">
-                      Model: {AI_TEXT_MODEL} · Voice: {aiVoiceLabel}
-                    </span>
-                  </Button>
+
+                  {aiTotalDuration > 0 && !aiActive && (
+                    <div className="text-xs text-muted-foreground bg-[#F3EFE8] rounded-lg p-2">
+                      <div className="font-medium mb-1">AI Performance:</div>
+                      <div className="space-y-0.5">
+                        <div>• Total speaking time: {Math.round(aiTotalDuration / 1000)}s</div>
+                        <div>• Responses generated: {aiResponseCount}</div>
+                        {takebackCount > 0 && <div>• Control switches: {takebackCount}</div>}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {role === 'detector' && (
                 <div className="space-y-2">
                   <div className="text-xs text-muted-foreground">One guess. Use it wisely.</div>
-                  <Button variant="secondary" onClick={handleDetectorGuess} disabled={!!detectorResult} className="w-full">
+                  <Button
+                    variant="secondary"
+                    onClick={handleDetectorGuess}
+                    disabled={!!detectorResult}
+                    className="w-full py-3 px-4"
+                  >
                     Call it: AI is speaking
                   </Button>
                   {detectorResult && <div className="text-xs text-muted-foreground">{detectorResult}</div>}

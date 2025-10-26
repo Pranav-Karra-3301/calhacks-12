@@ -24,6 +24,16 @@ type MetricStats = {
   detectorAccuracy: number | null
 }
 
+type SinglePlayerStats = {
+  totalRounds: number
+  correctGuesses: number
+  accuracy: number
+  aiDetectionRate: number
+  humanDetectionRate: number
+  aiRoundsPlayed: number
+  humanRoundsPlayed: number
+}
+
 export default function ProfilePage() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [loading, setLoading] = useState(true)
@@ -35,6 +45,9 @@ export default function ProfilePage() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [stats, setStats] = useState<MetricStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
+  const [soloStats, setSoloStats] = useState<SinglePlayerStats | null>(null)
+  const [soloStatsLoading, setSoloStatsLoading] = useState(false)
+  const [soloStatsError, setSoloStatsError] = useState<string | null>(null)
   const heroName = profile?.display_name || 'Voice Adventurer'
   const [avatarOptions, setAvatarOptions] = useState<AvatarOptions>({})
   const [isCustomizationModalOpen, setIsCustomizationModalOpen] = useState(false)
@@ -127,6 +140,35 @@ export default function ProfilePage() {
         }
       } finally {
         if (!cancelled) setStatsLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [profile?.id])
+
+  useEffect(() => {
+    if (!profile?.id) return
+    let cancelled = false
+    setSoloStatsLoading(true)
+    ;(async () => {
+      try {
+        const token = (await supabase.auth.getSession()).data.session?.access_token
+        if (!token) throw new Error('Missing auth token')
+        const response = await fetch('/api/singleplayer/stats', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!response.ok) throw new Error('Failed to fetch single-player stats')
+        const data: SinglePlayerStats = await response.json()
+        if (!cancelled) {
+          setSoloStats(data)
+          setSoloStatsError(null)
+        }
+      } catch (error: any) {
+        if (!cancelled) {
+          setSoloStats(null)
+          setSoloStatsError(error?.message || 'Unable to load solo stats right now.')
+        }
+      } finally {
+        if (!cancelled) setSoloStatsLoading(false)
       }
     })()
     return () => { cancelled = true }
@@ -355,6 +397,65 @@ export default function ProfilePage() {
                 <p className="text-sm text-muted-foreground">No clone attached yet. Record a 10s snippet and we&apos;ll hit ElevenLabs instant cloning for you.</p>
                 <VoiceRecorder label={ivcBusy ? 'Uploading...' : 'Record 10s & Create'} seconds={10} onFinish={(blob) => !ivcBusy && createInstantClone(blob)} />
               </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      <section>
+        <Card className="w-full border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-white">
+          <CardHeader className="space-y-2">
+            <div className="heading-font text-2xl">Solo performance</div>
+            <p className="text-sm text-muted-foreground">
+              Track how often you outsmart the uncanny valley in single-player mode.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {soloStatsLoading ? (
+              <div className="text-sm text-muted-foreground">Syncing stats from your recent runs...</div>
+            ) : soloStats ? (
+              <>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Rounds</p>
+                    <p className="text-3xl font-semibold">{soloStats.totalRounds ?? 0}</p>
+                    <p className="text-xs text-muted-foreground">All-time attempts</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Correct</p>
+                    <p className="text-3xl font-semibold">{soloStats.correctGuesses ?? 0}</p>
+                    <p className="text-xs text-muted-foreground">Confirmed hits</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Accuracy</p>
+                    <p className="text-3xl font-semibold text-emerald-700">{soloStats.accuracy ?? 0}%</p>
+                    <p className="text-xs text-muted-foreground">Overall</p>
+                  </div>
+                </div>
+                <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-emerald-200/70 bg-white/80 p-4">
+                    <p className="text-sm font-semibold text-emerald-900">AI clips</p>
+                    <p className="text-3xl font-bold text-emerald-700">{soloStats.aiDetectionRate ?? 0}%</p>
+                    <p className="text-xs text-muted-foreground">
+                      {soloStats.aiRoundsPlayed ?? 0} rounds served
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
+                    <p className="text-sm font-semibold text-slate-900">Human clips</p>
+                    <p className="text-3xl font-bold text-slate-900">{soloStats.humanDetectionRate ?? 0}%</p>
+                    <p className="text-xs text-muted-foreground">
+                      {soloStats.humanRoundsPlayed ?? 0} rounds served
+                    </p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-muted-foreground">
+                No single-player data yet. Jump into Solo Mode to start logging your streak.
+              </div>
+            )}
+            {soloStatsError && (
+              <p className="mt-4 text-sm text-rose-600">{soloStatsError}</p>
             )}
           </CardContent>
         </Card>

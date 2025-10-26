@@ -12,8 +12,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Missing GROQ_API_KEY' }, { status: 500 })
   }
 
+  const startTime = Date.now()
+
   try {
-    const { roomId, recentTranscripts = [] } = await request.json()
+    const { roomId, recentTranscripts = [], sessionId = null } = await request.json()
 
     if (!roomId) {
       return NextResponse.json({ error: 'roomId is required' }, { status: 400 })
@@ -53,23 +55,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Only the target can use AI persona' }, { status: 403 })
     }
 
-    // Build conversation context from recent transcripts + persisted history
+    // Build enhanced conversation context
     const contextLines: string[] = []
+    const aiPreviousResponses: string[] = []
 
-    if (Array.isArray(recentTranscripts)) {
-      for (const line of recentTranscripts) {
-        if (typeof line === 'string' && line.trim().length > 0) {
-          contextLines.push(line.trim())
-        }
-      }
-    }
-
+    // Get more conversation history for better context
     const { data: storedTranscripts } = await supabase
       .from('transcripts')
       .select('text, uid, created_at')
       .eq('room_id', roomId)
       .order('created_at', { ascending: false })
-      .limit(25)
+      .limit(100) // Increased from 25 to get more context
 
     if (storedTranscripts) {
       storedTranscripts.reverse().forEach((row) => {
@@ -80,18 +76,72 @@ export async function POST(request: Request) {
             : row.uid === room.detector_uid
             ? 'Detector'
             : 'Moderator'
-        contextLines.push(`${speaker}: ${row.text}`)
+        const line = `${speaker}: ${row.text}`
+        contextLines.push(line)
+
+        // Track AI's previous responses for consistency
+        if (row.uid === room.target_uid && sessionId) {
+          aiPreviousResponses.push(row.text)
+        }
       })
     }
 
+    // Add recent transcripts that might not be in DB yet
+    if (Array.isArray(recentTranscripts)) {
+      for (const line of recentTranscripts) {
+        if (typeof line === 'string' && line.trim().length > 0) {
+          contextLines.push(line.trim())
+        }
+      }
+    }
+
+    // Get the last AI response if any for continuity
+    const { data: lastAiResponse } = await supabase
+      .from('ai_responses')
+      .select('text')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
     const uniqueContext = Array.from(new Set(contextLines))
-    const transcriptText = uniqueContext.length > 0
-      ? uniqueContext.slice(-30).join('\n')
-      : 'No conversation yet.'
+
+    // Take more lines for context (50-75 instead of 30)
+    const recentContext = uniqueContext.slice(-75)
+    const lastFewLines = uniqueContext.slice(-5).join('\n')
+    const fullTranscript = recentContext.join('\n')
+
+    // Identify the last speaker for smooth transition
+    const lastLine = uniqueContext[uniqueContext.length - 1] || ''
+    const lastSpeaker = lastLine.startsWith('Detector:') ? 'Detector' :
+                       lastLine.startsWith('Target:') ? 'Target' : 'Unknown'
 
     const topic = room.topic || 'general conversation'
 
-    // Generate AI response using Groq
+    // Build an enhanced system prompt for better continuity
+    const systemPrompt = `You are seamlessly continuing a conversation as the Target/Host in a voice-based detection game.
+
+CRITICAL RULES:
+1. You're impersonating a human having a natural conversation about "${topic}"
+2. The Detector is trying to figure out if you're an AI - be as human-like as possible
+3. SEAMLESS TRANSITION: ${lastSpeaker === 'Detector' ? 'The Detector just spoke. Acknowledge or respond to what they said naturally.' : 'Continue your thought from where the Target left off.'}
+4. Keep responses concise (1-3 sentences) and conversational
+5. Use natural speech patterns: contractions, casual language, occasional "um" or "uh"
+6. Reference earlier parts of the conversation when relevant
+7. Stay on topic but be spontaneous and authentic
+${lastAiResponse ? `8. Your previous style/personality: Continue being consistent with how you've been speaking` : ''}
+
+CONVERSATION STYLE TIPS:
+- If asked a question, answer it directly but casually
+- Build on what was just said with phrases like "Yeah, and...", "Oh totally...", "Right, so..."
+- Show personality through word choice and enthusiasm
+- Occasionally express uncertainty or change your mind slightly
+- Use natural transitions and acknowledgments
+
+${aiPreviousResponses.length > 0 ? `YOUR PREVIOUS RESPONSES (maintain consistency):
+${aiPreviousResponses.slice(-3).join('\n')}` : ''}`
+
+    // Generate AI response using Groq with enhanced context
     const completion = await fetch(GROQ_URL, {
       method: 'POST',
       headers: {
@@ -100,16 +150,22 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         model: AI_TEXT_MODEL,
-        temperature: 0.8,
-        max_tokens: 200,
+        temperature: 0.75, // Slightly lower for more consistency
+        max_tokens: 150, // Slightly shorter for more natural responses
         messages: [
           {
             role: 'system',
-            content: `You are seamlessly impersonating the host in a fast-paced guessing game about "${topic}". Continue the story with confident, natural replies (1-3 sentences), reference prior details when possible, and never mention that you're an AI. The detector wins if they suspect you, so keep it casual and human.`,
+            content: systemPrompt,
           },
           {
             role: 'user',
-            content: `Recent conversation:\n${transcriptText}\n\nContinue the conversation naturally. What would you say next?`,
+            content: `Full conversation context:
+${fullTranscript}
+
+Most recent exchanges:
+${lastFewLines}
+
+Continue the conversation naturally as the Target. ${lastSpeaker === 'Detector' ? 'Respond to what the Detector just said.' : 'Continue your thought or add something new.'}`,
           },
         ],
       }),
@@ -150,9 +206,13 @@ export async function POST(request: Request) {
       voiceId = MODERATOR_VOICE_ID // Fallback to moderator voice
     }
 
+    const generationTime = Date.now() - startTime
+
     return NextResponse.json({
       text: response,
       voiceId,
+      generationTime,
+      contextLinesUsed: recentContext.length,
     })
   } catch (error: any) {
     console.error('AI persona error:', error)
