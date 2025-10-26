@@ -14,7 +14,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: 'Mimicry',
     description: 'can you differentiate your friends from ai?',
-    url: 'https://mimicry-platform.vercel.app',
+    url: 'https://play.mimicry.fun',
     siteName: 'Mimicry',
     images: [
       {

@@ -29,10 +29,6 @@ export default function SignInPage() {
     router.replace('/onboarding')
   }
 
-  async function signInGithub() {
-    const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/onboarding` : undefined
-    await supabase.auth.signInWithOAuth({ provider: 'github', options: { redirectTo } })
-  }
 
   return (
     <div className="relative min-h-screen flex items-center justify-center">
@@ -46,7 +42,6 @@ export default function SignInPage() {
             <Input placeholder="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} />
             {error && <div className="text-sm text-red-600">{error}</div>}
             <Button onClick={signInEmail} disabled={loading} className="w-full">Sign in</Button>
-            <Button onClick={signInGithub} variant="outline" className="w-full">Continue with GitHub</Button>
             <div className="text-sm text-muted-foreground">No account? <Link className="underline" href="/auth/signup">Sign up</Link></div>
           </CardContent>
         </Card>
