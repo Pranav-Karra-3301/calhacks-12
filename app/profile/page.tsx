@@ -22,7 +22,16 @@ type MetricStats = {
   gamesPlayed: number
   aiMoments: number
   detectorAccuracy: number | null
-  transcriptsCaptured: number
+}
+
+type SinglePlayerStats = {
+  totalRounds: number
+  correctGuesses: number
+  accuracy: number
+  aiDetectionRate: number
+  humanDetectionRate: number
+  aiRoundsPlayed: number
+  humanRoundsPlayed: number
 }
 
 export default function ProfilePage() {
@@ -36,7 +45,9 @@ export default function ProfilePage() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [stats, setStats] = useState<MetricStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
-  const [recentTranscripts, setRecentTranscripts] = useState<{ id: number; text: string; created_at: string; room_id?: string }[]>([])
+  const [soloStats, setSoloStats] = useState<SinglePlayerStats | null>(null)
+  const [soloStatsLoading, setSoloStatsLoading] = useState(false)
+  const [soloStatsError, setSoloStatsError] = useState<string | null>(null)
   const heroName = profile?.display_name || 'Voice Adventurer'
   const [avatarOptions, setAvatarOptions] = useState<AvatarOptions>({})
   const [isCustomizationModalOpen, setIsCustomizationModalOpen] = useState(false)
@@ -61,11 +72,6 @@ export default function ProfilePage() {
       label: 'Detection accuracy',
       value: stats && stats.detectorAccuracy !== null ? `${stats.detectorAccuracy}%` : statsLoading ? '—' : '—',
       helper: 'As the detector',
-    },
-    {
-      label: 'Transcripts captured',
-      value: stats ? stats.transcriptsCaptured.toString() : statsLoading ? '—' : '0',
-      helper: 'Groq-powered snippets saved',
     },
   ]), [stats, statsLoading])
 
@@ -107,19 +113,17 @@ export default function ProfilePage() {
     ;(async () => {
       try {
         const uid = profile.id
-        const [rooms, games, ai, guesses, transcripts] = await Promise.all([
+        const [rooms, games, ai, guesses] = await Promise.all([
           supabase.from('rooms').select('id', { count: 'exact', head: true }).eq('created_by', uid),
           supabase.from('participants').select('room_id', { count: 'exact', head: true }).eq('uid', uid),
           supabase.from('events').select('id', { count: 'exact', head: true }).eq('uid', uid).eq('type', 'ai-activated'),
           supabase.from('participants').select('guess_correct').eq('uid', uid).eq('guess_used', true),
-          supabase.from('transcripts').select('id,text,created_at,room_id', { count: 'exact' }).eq('uid', uid).order('created_at', { ascending: false }).limit(5),
         ])
         if (cancelled) return
         if (rooms.error) throw rooms.error
         if (games.error) throw games.error
         if (ai.error) throw ai.error
         if (guesses.error) throw guesses.error
-        if (transcripts.error) throw transcripts.error
 
         const totalGuesses = guesses.data?.length ?? 0
         const detectorAccuracy = totalGuesses ? Math.round(((guesses.data?.filter(g => g.guess_correct).length ?? 0) / totalGuesses) * 100) : null
@@ -129,16 +133,42 @@ export default function ProfilePage() {
           gamesPlayed: games.count ?? 0,
           aiMoments: ai.count ?? 0,
           detectorAccuracy,
-          transcriptsCaptured: transcripts.count ?? (transcripts.data?.length ?? 0),
         })
-        setRecentTranscripts(transcripts.data ?? [])
       } catch (error) {
         if (!cancelled) {
           setStats(null)
-          setRecentTranscripts([])
         }
       } finally {
         if (!cancelled) setStatsLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [profile?.id])
+
+  useEffect(() => {
+    if (!profile?.id) return
+    let cancelled = false
+    setSoloStatsLoading(true)
+    ;(async () => {
+      try {
+        const token = (await supabase.auth.getSession()).data.session?.access_token
+        if (!token) throw new Error('Missing auth token')
+        const response = await fetch('/api/singleplayer/stats', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!response.ok) throw new Error('Failed to fetch single-player stats')
+        const data: SinglePlayerStats = await response.json()
+        if (!cancelled) {
+          setSoloStats(data)
+          setSoloStatsError(null)
+        }
+      } catch (error: any) {
+        if (!cancelled) {
+          setSoloStats(null)
+          setSoloStatsError(error?.message || 'Unable to load solo stats right now.')
+        }
+      } finally {
+        if (!cancelled) setSoloStatsLoading(false)
       }
     })()
     return () => { cancelled = true }
@@ -372,29 +402,67 @@ export default function ProfilePage() {
         </Card>
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-2">
-        <Card>
+      <section>
+        <Card className="w-full border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-white">
           <CardHeader className="space-y-2">
-            <div className="heading-font text-2xl">Recent transcripts</div>
-            <p className="text-sm text-muted-foreground">A quick peek at what Groq captured lately.</p>
+            <div className="heading-font text-2xl">Solo performance</div>
+            <p className="text-sm text-muted-foreground">
+              Track how often you outsmart the uncanny valley in single-player mode.
+            </p>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {recentTranscripts.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No transcripts yet. Hop into a room and chat to populate this feed.</div>
-            ) : (
-              recentTranscripts.map((snippet) => (
-                <div key={snippet.id} className="rounded-2xl border border-border/80 bg-white/80 p-4">
-                  <div className="text-sm">{snippet.text}</div>
-                  <div className="text-xs text-muted-foreground mt-2">
-                    {new Date(snippet.created_at).toLocaleString()} • Room {snippet.room_id?.slice(0, 6) ?? '—'}
+          <CardContent>
+            {soloStatsLoading ? (
+              <div className="text-sm text-muted-foreground">Syncing stats from your recent runs...</div>
+            ) : soloStats ? (
+              <>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Rounds</p>
+                    <p className="text-3xl font-semibold">{soloStats.totalRounds ?? 0}</p>
+                    <p className="text-xs text-muted-foreground">All-time attempts</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Correct</p>
+                    <p className="text-3xl font-semibold">{soloStats.correctGuesses ?? 0}</p>
+                    <p className="text-xs text-muted-foreground">Confirmed hits</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Accuracy</p>
+                    <p className="text-3xl font-semibold text-emerald-700">{soloStats.accuracy ?? 0}%</p>
+                    <p className="text-xs text-muted-foreground">Overall</p>
                   </div>
                 </div>
-              ))
+                <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-emerald-200/70 bg-white/80 p-4">
+                    <p className="text-sm font-semibold text-emerald-900">AI clips</p>
+                    <p className="text-3xl font-bold text-emerald-700">{soloStats.aiDetectionRate ?? 0}%</p>
+                    <p className="text-xs text-muted-foreground">
+                      {soloStats.aiRoundsPlayed ?? 0} rounds served
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
+                    <p className="text-sm font-semibold text-slate-900">Human clips</p>
+                    <p className="text-3xl font-bold text-slate-900">{soloStats.humanDetectionRate ?? 0}%</p>
+                    <p className="text-xs text-muted-foreground">
+                      {soloStats.humanRoundsPlayed ?? 0} rounds served
+                    </p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-muted-foreground">
+                No single-player data yet. Jump into Solo Mode to start logging your streak.
+              </div>
+            )}
+            {soloStatsError && (
+              <p className="mt-4 text-sm text-rose-600">{soloStatsError}</p>
             )}
           </CardContent>
         </Card>
+      </section>
 
-        <Card>
+      <section>
+        <Card className="w-full">
           <CardHeader className="space-y-2">
             <div className="heading-font text-2xl">Game shortcuts</div>
             <p className="text-sm text-muted-foreground">Jump straight into your next deception challenge.</p>
