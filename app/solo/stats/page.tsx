@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -18,7 +18,7 @@ interface Stats {
   humanRoundsPlayed: number
 }
 
-export default function SoloStatsPage() {
+function StatsContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [loading, setLoading] = useState(true)
@@ -29,7 +29,7 @@ export default function SoloStatsPage() {
     // Get session stats from URL params
     const sessionCorrect = searchParams.get('sessionCorrect')
     const sessionTotal = searchParams.get('sessionTotal')
-    
+
     if (sessionCorrect && sessionTotal) {
       setSessionStats({
         correct: parseInt(sessionCorrect),
@@ -81,7 +81,7 @@ export default function SoloStatsPage() {
   return (
     <div className="min-h-screen">
       <LogoHeader />
-      
+
       <div className="container mx-auto px-4 py-12 max-w-4xl">
         <div className="space-y-8">
           {/* Header */}
@@ -196,5 +196,17 @@ export default function SoloStatsPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function SoloStatsPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-lg">Loading stats...</div>
+      </div>
+    }>
+      <StatsContent />
+    </Suspense>
   )
 }

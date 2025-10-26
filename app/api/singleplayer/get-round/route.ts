@@ -141,7 +141,7 @@ async function synthesizeWithElevenLabs(text: string) {
       text,
       // Add some variety in voice settings for more natural variation
       voice_settings: {
-        stability: 0.3 + Math.random() * 0.4, // 0.3 to 0.7
+        stability: [0.0, 0.5, 1.0][Math.floor(Math.random() * 3)], // Must be 0.0, 0.5, or 1.0
         similarity_boost: 0.5 + Math.random() * 0.3, // 0.5 to 0.8
         style: modelId === 'eleven_v3_alpha' ? Math.random() * 0.5 : 0, // Style only for v3
         use_speaker_boost: Math.random() > 0.5,
