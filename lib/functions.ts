@@ -52,6 +52,11 @@ export async function fnActivateAI(roomId: string) {
   return data as { ok: boolean }
 }
 
+export async function fnMarkIntro(roomId: string) {
+  const data = await callApi('/api/functions/mark-intro', { roomId })
+  return data as { ok: boolean; alreadyCompleted?: boolean }
+}
+
 export async function fnDetectorGuess(roomId: string) {
   const data = await callApi('/api/functions/detector-guess', { roomId })
   return data as { correct: boolean }
