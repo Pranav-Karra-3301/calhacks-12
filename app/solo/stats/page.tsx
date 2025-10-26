@@ -79,36 +79,36 @@ function StatsContent() {
     : 0
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen bg-[#F7F5F3]">
       <LogoHeader />
 
-      <div className="container mx-auto px-4 py-12 max-w-4xl">
-        <div className="space-y-8">
+      <div className="container mx-auto px-4 pt-24 sm:pt-28 md:pt-32 pb-12 max-w-4xl">
+        <div className="space-y-6 sm:space-y-8">
           {/* Header */}
           <div className="text-center space-y-2">
-            <h1 className="text-4xl font-bold">Your Stats</h1>
-            <p className="text-muted-foreground">Track your AI detection skills</p>
+            <h1 className="text-3xl sm:text-4xl font-bold">Your Stats</h1>
+            <p className="text-sm sm:text-base text-muted-foreground">Track your AI detection skills</p>
           </div>
 
           {/* Session Stats (if available) */}
           {sessionStats && sessionStats.total > 0 && (
             <Card className="border-2 border-primary">
               <CardHeader>
-                <h2 className="text-2xl font-semibold text-center">Last Session</h2>
+                <h2 className="text-xl sm:text-2xl font-semibold text-center">Last Session</h2>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-3 gap-4 text-center">
+                <div className="grid grid-cols-3 gap-3 sm:gap-4 text-center">
                   <div>
-                    <div className="text-3xl font-bold">{sessionStats.correct}</div>
-                    <div className="text-sm text-muted-foreground">Correct</div>
+                    <div className="text-2xl sm:text-3xl font-bold">{sessionStats.correct}</div>
+                    <div className="text-xs sm:text-sm text-muted-foreground mt-1">Correct</div>
                   </div>
                   <div>
-                    <div className="text-3xl font-bold">{sessionStats.total}</div>
-                    <div className="text-sm text-muted-foreground">Total Rounds</div>
+                    <div className="text-2xl sm:text-3xl font-bold">{sessionStats.total}</div>
+                    <div className="text-xs sm:text-sm text-muted-foreground mt-1">Total Rounds</div>
                   </div>
                   <div>
-                    <div className="text-3xl font-bold">{sessionAccuracy}%</div>
-                    <div className="text-sm text-muted-foreground">Accuracy</div>
+                    <div className="text-2xl sm:text-3xl font-bold">{sessionAccuracy}%</div>
+                    <div className="text-xs sm:text-sm text-muted-foreground mt-1">Accuracy</div>
                   </div>
                 </div>
               </CardContent>
@@ -120,40 +120,40 @@ function StatsContent() {
             <>
               <Card>
                 <CardHeader>
-                  <h2 className="text-2xl font-semibold text-center">All-Time Performance</h2>
+                  <h2 className="text-xl sm:text-2xl font-semibold text-center">All-Time Performance</h2>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 sm:gap-6">
                     <div className="text-center">
-                      <div className="text-4xl font-bold">{stats.totalRounds}</div>
-                      <div className="text-sm text-muted-foreground mt-1">Total Rounds</div>
+                      <div className="text-3xl sm:text-4xl font-bold">{stats.totalRounds}</div>
+                      <div className="text-xs sm:text-sm text-muted-foreground mt-1">Total Rounds</div>
                     </div>
                     <div className="text-center">
-                      <div className="text-4xl font-bold">{stats.correctGuesses}</div>
-                      <div className="text-sm text-muted-foreground mt-1">Correct Guesses</div>
+                      <div className="text-3xl sm:text-4xl font-bold">{stats.correctGuesses}</div>
+                      <div className="text-xs sm:text-sm text-muted-foreground mt-1">Correct Guesses</div>
                     </div>
-                    <div className="text-center">
-                      <div className="text-4xl font-bold text-primary">{stats.accuracy}%</div>
-                      <div className="text-sm text-muted-foreground mt-1">Overall Accuracy</div>
+                    <div className="text-center col-span-2 md:col-span-1">
+                      <div className="text-3xl sm:text-4xl font-bold text-primary">{stats.accuracy}%</div>
+                      <div className="text-xs sm:text-sm text-muted-foreground mt-1">Overall Accuracy</div>
                     </div>
                   </div>
                 </CardContent>
               </Card>
 
-              <div className="grid md:grid-cols-2 gap-6">
+              <div className="grid md:grid-cols-2 gap-4 sm:gap-6">
                 <Card>
                   <CardHeader>
-                    <h3 className="text-xl font-semibold">AI Detection</h3>
+                    <h3 className="text-lg sm:text-xl font-semibold">AI Detection</h3>
                   </CardHeader>
                   <CardContent>
-                    <div className="space-y-4">
+                    <div className="space-y-3 sm:space-y-4">
                       <div>
-                        <div className="text-3xl font-bold">{stats.aiDetectionRate}%</div>
-                        <div className="text-sm text-muted-foreground">Detection Rate</div>
+                        <div className="text-2xl sm:text-3xl font-bold">{stats.aiDetectionRate}%</div>
+                        <div className="text-xs sm:text-sm text-muted-foreground mt-1">Detection Rate</div>
                       </div>
                       <div>
-                        <div className="text-2xl font-semibold">{stats.aiRoundsPlayed}</div>
-                        <div className="text-sm text-muted-foreground">AI Rounds Played</div>
+                        <div className="text-xl sm:text-2xl font-semibold">{stats.aiRoundsPlayed}</div>
+                        <div className="text-xs sm:text-sm text-muted-foreground mt-1">AI Rounds Played</div>
                       </div>
                     </div>
                   </CardContent>
@@ -161,17 +161,17 @@ function StatsContent() {
 
                 <Card>
                   <CardHeader>
-                    <h3 className="text-xl font-semibold">Human Detection</h3>
+                    <h3 className="text-lg sm:text-xl font-semibold">Human Detection</h3>
                   </CardHeader>
                   <CardContent>
-                    <div className="space-y-4">
+                    <div className="space-y-3 sm:space-y-4">
                       <div>
-                        <div className="text-3xl font-bold">{stats.humanDetectionRate}%</div>
-                        <div className="text-sm text-muted-foreground">Detection Rate</div>
+                        <div className="text-2xl sm:text-3xl font-bold">{stats.humanDetectionRate}%</div>
+                        <div className="text-xs sm:text-sm text-muted-foreground mt-1">Detection Rate</div>
                       </div>
                       <div>
-                        <div className="text-2xl font-semibold">{stats.humanRoundsPlayed}</div>
-                        <div className="text-sm text-muted-foreground">Human Rounds Played</div>
+                        <div className="text-xl sm:text-2xl font-semibold">{stats.humanRoundsPlayed}</div>
+                        <div className="text-xs sm:text-sm text-muted-foreground mt-1">Human Rounds Played</div>
                       </div>
                     </div>
                   </CardContent>

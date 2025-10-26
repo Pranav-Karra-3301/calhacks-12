@@ -142,9 +142,9 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
   const scale = 1 - Math.min(0.1, Math.abs(offset) / 1000)
 
   return (
-    <div className="relative w-full h-full flex items-center justify-center pt-16">
+    <div className="relative w-full h-full flex items-center justify-center px-4 sm:px-0">
       {/* Card Stack - Background cards */}
-      <div className="absolute inset-0 flex items-center justify-center pt-16">
+      <div className="absolute inset-0 flex items-center justify-center px-4 sm:px-0">
         {/* Third card (bottom of stack) */}
         <div
           className="absolute"
@@ -154,7 +154,7 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
             zIndex: 0
           }}
         >
-          <Card className="w-[90vw] max-w-2xl aspect-[3/4] bg-white/90 border border-border/50" />
+          <Card className="w-full max-w-md sm:max-w-xl md:max-w-2xl aspect-[3/4] bg-white/90 border border-border/50" />
         </div>
 
         {/* Second card */}
@@ -166,13 +166,13 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
             zIndex: 1
           }}
         >
-          <Card className="w-[90vw] max-w-2xl aspect-[3/4] bg-white/90 border border-border/70" />
+          <Card className="w-full max-w-md sm:max-w-xl md:max-w-2xl aspect-[3/4] bg-white/90 border border-border/70" />
         </div>
       </div>
 
       {/* Main Interactive Card */}
       <div
-        className="relative w-[90vw] max-w-2xl"
+        className="relative w-full max-w-md sm:max-w-xl md:max-w-2xl"
         style={{
           transform: `translateX(${offset}px) rotate(${rotation}deg) scale(${scale})`,
           transition: isDragging || isExiting ? 'none' : 'all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55)',
@@ -188,15 +188,15 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
         onTouchEnd={handleEnd}
       >
         <Card className="cursor-grab active:cursor-grabbing select-none bg-white/95 backdrop-blur aspect-[3/4]">
-          <CardContent className="flex h-full flex-col justify-center p-8">
+          <CardContent className="flex h-full flex-col justify-center p-6 sm:p-8">
             {/* Audio Section - Centered */}
-            <div className="flex-1 flex flex-col items-center justify-center space-y-8">
+            <div className="flex-1 flex flex-col items-center justify-center space-y-6 sm:space-y-8">
               {/* Waveform - Full Width */}
               <div className="w-full">
                 <LiveWaveform
                   audioRef={audioRef}
                   isActive={isPlaying}
-                  className="h-32 w-full rounded-xl bg-[#F7F5F3]"
+                  className="h-24 sm:h-32 w-full rounded-xl bg-[#F7F5F3]"
                 />
               </div>
 
@@ -206,7 +206,7 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
                 onClick={togglePlay}
                 disabled={disabled || !audioUrl}
                 variant={isPlaying ? "secondary" : "default"}
-                className="min-w-[160px]"
+                className="min-w-[140px] sm:min-w-[160px]"
               >
                 {isPlaying ? 'Pause' : 'Play'}
               </Button>
@@ -222,13 +222,13 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
             </div>
 
             {/* Decision Buttons */}
-            <div className="grid gap-4 grid-cols-2 mt-8">
+            <div className="grid gap-3 sm:gap-4 grid-cols-2 mt-6 sm:mt-8">
               <Button
                 variant="outline"
                 size="lg"
                 onClick={() => handleSwipe('left')}
                 disabled={disabled || isExiting}
-                className="w-full"
+                className="w-full text-sm sm:text-base"
               >
                 Human
               </Button>
@@ -237,7 +237,7 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
                 size="lg"
                 onClick={() => handleSwipe('right')}
                 disabled={disabled || isExiting}
-                className="w-full"
+                className="w-full text-sm sm:text-base"
               >
                 AI
               </Button>
@@ -250,22 +250,22 @@ export function SwipeCard({ audioUrl, text, onSwipe, roundNumber, disabled }: Sw
           <>
             {/* Left indicator */}
             <div
-              className={`pointer-events-none absolute top-1/2 -translate-y-1/2 -left-20 transition-opacity ${
+              className={`pointer-events-none absolute top-1/2 -translate-y-1/2 -left-12 sm:-left-20 transition-opacity ${
                 offset < -50 ? 'opacity-100' : 'opacity-0'
               }`}
             >
-              <div className="text-4xl font-bold text-[#35302E]/30">
+              <div className="text-2xl sm:text-4xl font-bold text-[#35302E]/30">
                 HUMAN
               </div>
             </div>
 
             {/* Right indicator */}
             <div
-              className={`pointer-events-none absolute top-1/2 -translate-y-1/2 -right-14 transition-opacity ${
+              className={`pointer-events-none absolute top-1/2 -translate-y-1/2 -right-8 sm:-right-14 transition-opacity ${
                 offset > 50 ? 'opacity-100' : 'opacity-0'
               }`}
             >
-              <div className="text-4xl font-bold text-[#1F4B3A]/30">
+              <div className="text-2xl sm:text-4xl font-bold text-[#1F4B3A]/30">
                 AI
               </div>
             </div>

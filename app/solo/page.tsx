@@ -206,15 +206,15 @@ export default function SoloPage() {
       <LogoHeader />
 
       {/* Top bar card - matching old design */}
-      <div className="w-full px-2 sm:px-4 py-4 sm:py-8">
+      <div className="w-full px-4 pt-20 sm:pt-24 md:pt-28 pb-4 sm:pb-6">
         <div className="mx-auto max-w-5xl">
-          <div className="flex flex-col gap-3 sm:gap-4 rounded-2xl sm:rounded-3xl border border-slate-200 bg-white/80 p-3 sm:p-5 shadow-lg shadow-slate-200/60 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 sm:gap-4 rounded-2xl sm:rounded-3xl border border-slate-200 bg-white/80 p-4 sm:p-5 shadow-lg shadow-slate-200/60 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex-1">
-              <p className="text-[10px] sm:text-xs uppercase tracking-[0.3em] text-muted-foreground">Session accuracy</p>
-              <p className="text-2xl sm:text-3xl font-semibold">
+              <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Session accuracy</p>
+              <p className="text-2xl sm:text-3xl font-semibold mt-1">
                 {sessionScore.total ? `${sessionAccuracy}%` : '—'}
               </p>
-              <p className="text-xs sm:text-sm text-muted-foreground">
+              <p className="text-sm text-muted-foreground mt-1">
                 Correct guesses: {sessionScore.correct}/{sessionScore.total}
               </p>
             </div>
@@ -267,12 +267,12 @@ export default function SoloPage() {
       </div>
 
       {/* Mobile bottom progress dots */}
-      <div className="sm:hidden w-full px-4 py-3 border-t border-[#35302E]/10">
-        <div className="flex items-center justify-center gap-1.5">
+      <div className="sm:hidden w-full px-4 py-4 border-t border-[#35302E]/10 bg-white/50">
+        <div className="flex items-center justify-center gap-1.5 flex-wrap max-w-xs mx-auto">
           {sessionHistory.slice(0, 15).reverse().map((entry) => (
             <div
               key={entry.id}
-              className={`h-2 w-2 rounded-full ${
+              className={`h-2.5 w-2.5 rounded-full ${
                 entry.correct ? 'bg-emerald-500' : 'bg-gray-300'
               }`}
             />
