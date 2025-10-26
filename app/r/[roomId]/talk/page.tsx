@@ -87,14 +87,32 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   const [selectedMic, setSelectedMic] = useState('')
   const [isMicMuted, setIsMicMuted] = useState(true)
   
-  const updateParticipantMute = useCallback((uid: string | undefined, muted: boolean) => {
+  const updateParticipantMute = useCallback((uid: string | null | undefined, muted: boolean) => {
     if (!uid) return
     setParticipantMuteMap((prev) => {
       if (prev[uid] === muted) return prev
       return { ...prev, [uid]: muted }
     })
   }, [])
-
+  
+  const requestRoomEnd = useCallback(async (reason: string, leaver?: string | null, redirect = false) => {
+    if (roomEndRequestedRef.current) {
+      if (redirect) router.push('/')
+      return
+    }
+    roomEndRequestedRef.current = true
+    try {
+      await fnEndCall(roomId, { reason, leaverUid: leaver ?? null })
+    } catch (error) {
+      console.error('Failed to end room:', error)
+      roomEndRequestedRef.current = false
+    } finally {
+      if (redirect) {
+        router.push('/')
+      }
+    }
+  }, [roomId, router])
+  
   // Get user auth
   useEffect(() => {
     let active = true
@@ -539,24 +557,6 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     if (uid === userId) return 'You'
     return participants.find((p) => p.uid === uid)?.display_name || 'Player'
   }
-
-  const requestRoomEnd = useCallback(async (reason: string, leaver?: string | null, redirect = false) => {
-    if (roomEndRequestedRef.current) {
-      if (redirect) router.push('/')
-      return
-    }
-    roomEndRequestedRef.current = true
-    try {
-      await fnEndCall(roomId, { reason, leaverUid: leaver ?? null })
-    } catch (error) {
-      console.error('Failed to end room:', error)
-      roomEndRequestedRef.current = false
-    } finally {
-      if (redirect) {
-        router.push('/')
-      }
-    }
-  }, [roomId, router])
 
   async function handleEndCall() {
     if (livekitRoom.current) {
