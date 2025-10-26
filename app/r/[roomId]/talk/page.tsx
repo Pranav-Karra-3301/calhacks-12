@@ -9,7 +9,7 @@ import { Timer } from '@/components/Timer'
 import { MicSelector } from '@/components/ui/mic-selector'
 import { ScrollingWaveform } from '@/components/ui/waveform'
 import { supabase, getAccessToken, functionsUrl } from '@/lib/supabase'
-import { fnActivateAI, fnDetectorGuess, fnEndCall } from '@/lib/functions'
+import { fnActivateAI, fnDetectorGuess, fnEndCall, fnMarkIntro } from '@/lib/functions'
 import { publishAudioBlob, setLocalAudioEnabled } from '@/lib/livekit-audio'
 import { DeepgramLiveTranscriber } from '@/lib/deepgram-transcription'
 
@@ -26,6 +26,7 @@ type RoomInfo = {
   started_at: string | null
   status: string | null
   result?: string | null
+  intro_played_at?: string | null
 }
 
 type Participant = { uid: string; display_name: string | null; joined_at: string }
@@ -59,8 +60,17 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   const [question, setQuestion] = useState('')
   const [moderatorMessages, setModeratorMessages] = useState<{ id: string; text: string }[]>([])
   const [moderatorBusy, setModeratorBusy] = useState(false)
-  const [introPlayed, setIntroPlayed] = useState(false)
   const introInProgress = useRef(false)
+  const introCompletedLocally = useRef(false)
+  const introAutoUnmuteRef = useRef(false)
+
+  const introPlayed = !!room?.intro_played_at
+
+  useEffect(() => {
+    introCompletedLocally.current = false
+    introInProgress.current = false
+    introAutoUnmuteRef.current = false
+  }, [roomId])
   
   // Timer state
   const [timerStart, setTimerStart] = useState(0)
@@ -487,9 +497,20 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
   useEffect(() => {
     if (!room || introPlayed || !isConnected) return
     if (participants.length < 2) return
-    if (introInProgress.current) return
+    if (introInProgress.current || introCompletedLocally.current) return
+    if (room.created_by !== userId) return
     playModeratorIntro()
-  }, [room, introPlayed, isConnected, participants.length])
+  }, [room, introPlayed, isConnected, participants.length, userId])
+
+  useEffect(() => {
+    if (!introPlayed) {
+      introAutoUnmuteRef.current = false
+      return
+    }
+    if (introAutoUnmuteRef.current) return
+    introAutoUnmuteRef.current = true
+    setIsMicMuted(false)
+  }, [introPlayed])
 
   // Announce AI timeout
   useEffect(() => {
@@ -637,21 +658,21 @@ export default function TalkPage({ params }: { params: { roomId: string } }) {
     try {
       const hostName = nameFor(room.target_uid ?? room.created_by)
       const detectorName = room.detector_uid ? nameFor(room.detector_uid) : 'the detector'
-      const lines = [
-        `Hey ${hostName} and ${detectorName}! Welcome to Mimicry—the game where the host can swap themself out for a voice-cloned imposter mid-call and the detector has to report it before the timer burns out. Chat naturally, but remember someone is going to flip that switch.`,
-        `You'll hear from me if you need hints or rules. Alright, I'm unmuting you both now—if you need inspiration, peek at the suggested topics on the right. Have fun!`,
-      ]
-      for (const line of lines) {
-        const ok = await playModeratorLine(line)
-        if (!ok) {
-          if (!manual) {
-            setModeratorMessages((prev) => [...prev, { id: crypto.randomUUID(), text: 'Tap the Replay Intro button so I can give the rundown.' }])
-          }
-          return
+      const line = `Hey ${hostName} and ${detectorName}! Welcome to Mimicry—the host can swap in a voice-cloned imposter mid-call while the detector races to call it out. You're both muted until I wrap this line, then jump in and keep it natural.`
+      const ok = await playModeratorLine(line)
+      if (!ok) {
+        if (!manual) {
+          setModeratorMessages((prev) => [...prev, { id: crypto.randomUUID(), text: 'Tap the Replay Intro button so I can give the rundown.' }])
         }
+        return
       }
-      setIntroPlayed(true)
+      introCompletedLocally.current = true
       setIsMicMuted(false)
+      try {
+        await fnMarkIntro(roomId)
+      } catch (error) {
+        console.error('Failed to mark intro completion:', error)
+      }
     } finally {
       introInProgress.current = false
     }
