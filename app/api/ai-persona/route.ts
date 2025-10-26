@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { AI_TEXT_MODEL, MODERATOR_VOICE_ID } from '@/lib/ai-config'
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
-const MODEL = 'llama-3.3-70b-versatile'
 
 export const runtime = 'nodejs'
 
@@ -99,7 +99,7 @@ export async function POST(request: Request) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: AI_TEXT_MODEL,
         temperature: 0.8,
         max_tokens: 200,
         messages: [
@@ -135,7 +135,20 @@ export async function POST(request: Request) {
       .eq('uid', user.id)
       .maybeSingle()
 
-    const voiceId = clone?.voice_id || 'kdmDKE6EkgrWrrykO9Qt' // Fallback to moderator voice
+    let voiceId = clone?.voice_id || null
+
+    if (!voiceId) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('elevenlabs_voice_id')
+        .eq('id', user.id)
+        .maybeSingle()
+      voiceId = profile?.elevenlabs_voice_id || null
+    }
+
+    if (!voiceId) {
+      voiceId = MODERATOR_VOICE_ID // Fallback to moderator voice
+    }
 
     return NextResponse.json({
       text: response,
